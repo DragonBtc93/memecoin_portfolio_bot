@@ -35,5 +35,16 @@ MONITOR_POLLING_INTERVAL_SECONDS: int = 60 # How often to check dev wallets for 
 USDC_MINT_ADDRESS: str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 SOL_MINT_ADDRESS: str = "So11111111111111111111111111111111111111112" # Wrapped SOL
 
+# Defines what percentage of current holdings to suggest selling at each TP level.
+# Format: {profit_percentage_trigger: percentage_of_tokens_to_sell}
+# Example: At 25% profit, suggest selling 30% of current token amount.
+# Keys should ideally align with values in TAKE_PROFIT_LEVELS_PERCENTAGES for clarity.
+TAKE_PROFIT_SELL_SCHEDULE: dict[float, float] = {
+    25.0: 0.30,  # At 25% profit, suggest selling 30%
+    50.0: 0.50,  # At 50% profit, suggest selling 50% (of current holding for this trade)
+    100.0: 1.0, # At 100% profit, suggest selling 100% (of current holding for this trade)
+    # 200.0: 1.0, # Example: if 200% is also a TP level, you might also sell 100%
+}
+
 # PRICE_API_ENDPOINT: str = "https://api.jup.ag/v4/" # Example Jupiter API for prices
 # LOG_LEVEL: str = "INFO"

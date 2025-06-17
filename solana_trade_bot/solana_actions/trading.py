@@ -3,7 +3,7 @@ import requests # For Jupiter API
 import logging
 import base58
 
-from solana_trade_bot.core.config import TAKE_PROFIT_LEVELS_PERCENTAGES, SOL_MINT_ADDRESS
+from solana_trade_bot.core.config import TAKE_PROFIT_LEVELS_PERCENTAGES, SOL_MINT_ADDRESS, TAKE_PROFIT_SELL_SCHEDULE
 
 # Solana-py and Solders specific imports
 from solders.pubkey import Pubkey as PublicKey
@@ -160,10 +160,10 @@ def check_take_profit_levels(
     current_price_usd: float,
     bought_price_usd_per_token: float,
     last_notified_tp_level_percent: int | None
-) -> tuple[int | None, str | None]:
+) -> tuple[int | None, float | None, str | None]: # Added float for sell_fraction
     if bought_price_usd_per_token <= 0:
         logger.debug(f"Invalid bought_price_usd_per_token: {bought_price_usd_per_token} for {token_mint_address}")
-        return None, None
+        return None, None, None
 
     profit_percent = ((current_price_usd - bought_price_usd_per_token) / bought_price_usd_per_token) * 100.0
     logger.debug(f"Token: {token_mint_address}, Buy: ${bought_price_usd_per_token:.4f}, Current: ${current_price_usd:.4f}, Profit: {profit_percent:.2f}%")
@@ -180,17 +180,28 @@ def check_take_profit_levels(
             break
 
     if new_highest_achieved_level is not None:
-        message = (
-            f"📈 **Take Profit Alert** for token `{token_mint_address}`!\n"
-            f"Current profit: **+{profit_percent:.2f}%** (Target Reached: **+{new_highest_achieved_level}%**)\n"
-            f"Bought at (USD): ${bought_price_usd_per_token:.4f}\n"
-            f"Current Price (USD): ${current_price_usd:.4f}\n"
-            f"Consider taking some profits!"
-        )
-        logger.info(f"TP Level {new_highest_achieved_level}% hit for {token_mint_address} (Profit: {profit_percent:.2f}%)")
-        return new_highest_achieved_level, message
+        sell_fraction = TAKE_PROFIT_SELL_SCHEDULE.get(float(new_highest_achieved_level)) # Ensure key is float
 
-    return None, None
+        if sell_fraction is not None:
+            message = (
+                f"📈 **Take Profit Alert** for token `{token_mint_address}`!\n"
+                f"Current profit: **+{profit_percent:.2f}%** (Target Reached: **+{new_highest_achieved_level}%**)\n"
+                f"Bought at (USD): ${bought_price_usd_per_token:.4f}\n"
+                f"Current Price (USD): ${current_price_usd:.4f}\n"
+                f"Consider selling **{sell_fraction*100:.0f}%** of your holdings for this trade."
+            )
+        else: # TP level hit, but no specific sell percentage defined for it in schedule
+            message = (
+                f"📈 **Price Alert** for token `{token_mint_address}`!\n"
+                f"Current profit: **+{profit_percent:.2f}%** (Target Reached: **+{new_highest_achieved_level}%**)\n"
+                f"Bought at (USD): ${bought_price_usd_per_token:.4f}\n"
+                f"Current Price (USD): ${current_price_usd:.4f}"
+            )
+
+        logger.info(f"TP Level {new_highest_achieved_level}% hit for {token_mint_address} (Profit: {profit_percent:.2f}%). Sell fraction: {sell_fraction}")
+        return new_highest_achieved_level, sell_fraction, message
+
+    return None, None, None
 
 def calculate_profit(bought_price: float, current_price: float, amount: float) -> float:
     if amount == 0:

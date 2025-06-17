@@ -181,7 +181,7 @@ async def monitor_wallets(bot: telegram.Bot):
                         f"Current@ ${current_token_price_usdc:.4f}, Last Notified Level: {last_tp_notified_level_db}%"
                     )
 
-                    new_tp_level, message = await asyncio.to_thread(
+                    new_tp_level, suggested_sell_fraction, message = await asyncio.to_thread(
                         solana_trading.check_take_profit_levels,
                         token_mint,
                         current_token_price_usdc,
@@ -189,8 +189,8 @@ async def monitor_wallets(bot: telegram.Bot):
                         last_tp_notified_level_db
                     )
 
-                    if new_tp_level and message:
-                        logger.info(f"Take profit alert for user {chat_id}, trade {trade['trade_id']}, token {token_mint}: {message}")
+                    if new_tp_level and message: # If a new TP level is hit, a message will be generated
+                        logger.info(f"Take profit alert for user {chat_id}, trade {trade['trade_id']}, token {token_mint}: {message} (Sell fraction: {suggested_sell_fraction})")
                         try:
                             await bot.send_message(chat_id=chat_id, text=message, parse_mode='Markdown')
                             # Update the last notified level in DB
