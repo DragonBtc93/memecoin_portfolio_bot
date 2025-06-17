@@ -51,7 +51,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/get_buy_amount - Shows your current buy amount setting.\n"
         "/view_profits - View conceptual profits for your tokens.\n"
         "/confirm_buy <trade_id> <tokens_bought> <sol_spent> - Confirm your purchase details.\n"
-        "/confirm_sell <trade_id> <tokens_sold> <sol_received> - Confirm your sale details (conceptual)."
+        "/confirm_sell <trade_id> <tokens_sold> <sol_received> - Confirm your sale details (conceptual).\n"
+        "/trade_on - Enable notifications and conceptual trading features.\n"
+        "/trade_off - Disable notifications and conceptual trading features.\n"
+        "/trade_status - Check if your trading features are ON or OFF."
     )
     await update.message.reply_text(help_text)
 
@@ -345,6 +348,9 @@ async def main_async() -> None: # Renamed to main_async and made async
     application.add_handler(CommandHandler("view_profits", view_profits_command))
     application.add_handler(CommandHandler("confirm_buy", confirm_buy_command))
     application.add_handler(CommandHandler("confirm_sell", confirm_sell_command))
+    application.add_handler(CommandHandler("trade_on", trade_on_command))
+    application.add_handler(CommandHandler("trade_off", trade_off_command))
+    application.add_handler(CommandHandler("trade_status", trade_status_command))
 
     # Example of how notify_user_of_new_mint could be tested/used conceptually
     # In a real scenario, this would be triggered by the Solana event listener.

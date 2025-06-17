@@ -100,17 +100,22 @@ async def monitor_wallets(bot: telegram.Bot):
 
                             for user_chat_id in user_chat_ids:
                                 try:
-                                    await notify_user_of_new_mint(
-                                        bot=bot,
-                                        solana_client=solana_client, # Pass the client instance
-                                        chat_id=user_chat_id,
-                                        new_token_mint_address=new_mint_address,
-                                        dev_wallet_address=dev_wallet_address
-                                    )
+                                    trading_enabled = await asyncio.to_thread(core_db.get_user_trading_status, user_chat_id)
+                                    if trading_enabled:
+                                        logger.info(f"User {user_chat_id} has trading ON. Notifying for new mint {new_mint_address}.")
+                                        await notify_user_of_new_mint(
+                                            bot=bot,
+                                            solana_client=solana_client,
+                                            chat_id=user_chat_id,
+                                            new_token_mint_address=new_mint_address,
+                                            dev_wallet_address=dev_wallet_address
+                                        )
+                                    else:
+                                        logger.info(f"User {user_chat_id} has trading OFF. Skipping new mint buy notification for {new_mint_address}.")
                                 except Exception as e_notify:
-                                    logger.error(f"Error notifying user {user_chat_id} for mint {new_mint_address}: {e_notify}")
+                                    logger.error(f"Error during notification process for user {user_chat_id}, mint {new_mint_address}: {e_notify}")
 
-                            # Mark mint as processed (notifications sent/attempted)
+                            # Mark mint as processed (notifications sent/attempted or skipped based on user pref)
                             await asyncio.to_thread(core_db.update_mint_processed_time, new_mint_address)
                             logger.info(f"Finished processing and notifying for mint {new_mint_address}.")
                         else:

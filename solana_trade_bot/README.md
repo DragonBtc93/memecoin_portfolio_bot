@@ -23,7 +23,8 @@ This project is a Python-based Telegram bot designed to monitor specific Solana 
 *   **Take-Profit Notifications:**
     *   Alerts users when their confirmed trades reach predefined percentage profit levels (defined in `TAKE_PROFIT_LEVELS_PERCENTAGES`).
     *   **Configurable Sell Suggestions:** Suggests a percentage of current token holdings to sell at each take-profit level, based on the `TAKE_PROFIT_SELL_SCHEDULE` configuration.
-*   **Database Persistence:** Uses SQLite to store user settings, monitored mints, and trade lifecycle information.
+*   **User-Controlled Trading Notifications:** Enable or disable receiving buy notifications for new mints via `/trade_on` and `/trade_off` commands. Trading status is ON by default for new users.
+*   **Database Persistence:** Uses SQLite to store user settings (including trading status), monitored mints, and trade lifecycle information.
 *   **Unit Tests:** Includes a basic testing framework.
 
 ## Prerequisites
@@ -80,12 +81,13 @@ Key configuration variables:
     *If a level in `TAKE_PROFIT_LEVELS_PERCENTAGES` is not a key in `TAKE_PROFIT_SELL_SCHEDULE`, the notification will be a price alert without a specific sell suggestion.*
 *   `DATABASE_FILE` (in `solana_trade_bot/core/config.py`): Name of the SQLite database file. Defaults to `solana_bot.db`.
 *   `SOL_MINT_ADDRESS` / `USDC_MINT_ADDRESS` (in `solana_trade_bot/core/config.py`): Mint addresses for Wrapped SOL and USDC, used for price conversions.
+*   **Note on User Defaults:** New users who `/start` the bot will have trading notifications ON by default. They can use `/trade_off` to disable them.
 
 ## Database Initialization
 
-The bot uses an SQLite database (`solana_bot.db` by default) to store user information, trades, and monitored mints.
+The bot uses an SQLite database (`solana_bot.db` by default) to store user information, trades, and monitored mints. The `users` table includes an `is_trading_enabled` column (`BOOLEAN DEFAULT True`) to manage each user's preference for receiving new mint buy notifications.
 
-*   **Automatic Initialization:** The database and necessary tables are automatically created or verified when the bot starts up (`python solana_trade_bot/bot/main.py`).
+*   **Automatic Initialization:** The database and necessary tables (including the `is_trading_enabled` column with migration for existing databases) are automatically created or verified when the bot starts up (`python solana_trade_bot/bot/main.py`).
 *   **Manual Initialization:** You can also initialize the database manually by running:
     ```bash
     python solana_trade_bot/core/db.py
@@ -126,6 +128,9 @@ Once the bot is running and you've started a chat with it on Telegram:
 *   `/confirm_buy <trade_id> <tokens_bought> <sol_spent>`: Confirms the details of a purchase you made after a bot notification. The `trade_id` is provided in the notification.
     *Example: `/confirm_buy 123 1000000 0.5` (bought 1,000,000 tokens for 0.5 SOL)*
 *   `/confirm_sell <trade_id> <tokens_sold> <sol_received>`: (Conceptual) Confirms details of a sale. Not fully implemented for P/L updates yet.
+*   `/trade_on`: Enables receiving buy notifications for new token mints.
+*   `/trade_off`: Disables receiving buy notifications for new token mints.
+*   `/trade_status`: Checks if your buy notifications are currently ON or OFF.
 
 **Note on Notifications:**
 *   **New Mint Alerts:** Include the token mint address, the developer wallet source, a `trade_id` for `/confirm_buy`, and an experimental Phantom deep link for a quick buy.

@@ -18,10 +18,24 @@ def init_db() -> None:
             chat_id INTEGER PRIMARY KEY,
             linked_solana_address TEXT UNIQUE,
             buy_amount_sol REAL,
+            is_trading_enabled BOOLEAN DEFAULT True, -- Added new column
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+
+    # Schema migration: Add is_trading_enabled if it doesn't exist
+    cursor.execute("PRAGMA table_info(users)")
+    columns = [column['name'] for column in cursor.fetchall()]
+    if 'is_trading_enabled' not in columns:
+        try:
+            cursor.execute("ALTER TABLE users ADD COLUMN is_trading_enabled BOOLEAN DEFAULT True")
+            conn.commit()
+            print("Schema migration: Added 'is_trading_enabled' column to 'users' table.")
+        except sqlite3.OperationalError as e:
+            # This might happen in rare race conditions or if the PRAGMA check is somehow insufficient.
+            print(f"Could not add 'is_trading_enabled' column, might already exist or other DB issue: {e}")
+
     # Using UNIQUE for linked_solana_address assuming one bot user per Solana address for simplicity.
     # Added updated_at trigger for users table
     cursor.execute("""
@@ -80,10 +94,16 @@ def get_user(chat_id: int) -> sqlite3.Row | None:
     conn.close()
     return user_row
 
-def upsert_user_settings(chat_id: int, solana_address: str | None = None, buy_amount_sol: float | None = None) -> None:
+def upsert_user_settings(
+    chat_id: int,
+    solana_address: str | None = None,
+    buy_amount_sol: float | None = None,
+    is_trading_enabled: bool | None = None
+) -> None:
     """
     Inserts a new user or updates existing user's settings.
     Fields are updated only if a new value is provided.
+    For new users, is_trading_enabled defaults to True if not specified.
     """
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -95,12 +115,15 @@ def upsert_user_settings(chat_id: int, solana_address: str | None = None, buy_am
         # User exists, prepare an UPDATE statement
         updates = []
         params = []
-        if solana_address is not None:
+        if solana_address is not None: # Allows setting to empty string (which becomes NULL)
             updates.append("linked_solana_address = ?")
-            params.append(solana_address if solana_address.strip() else None) # Store empty string as NULL
-        if buy_amount_sol is not None:
+            params.append(solana_address if solana_address.strip() else None)
+        if buy_amount_sol is not None: # Allows setting to 0.0
             updates.append("buy_amount_sol = ?")
             params.append(buy_amount_sol)
+        if is_trading_enabled is not None:
+            updates.append("is_trading_enabled = ?")
+            params.append(is_trading_enabled)
 
         if not updates: # Nothing to update
             conn.close()
@@ -113,18 +136,23 @@ def upsert_user_settings(chat_id: int, solana_address: str | None = None, buy_am
         params.append(chat_id)
 
         cursor.execute(query, tuple(params))
-        print(f"Updated user {chat_id} with: {updates}")
+        # Log which fields were updated for clarity
+        updated_fields_log = [u.split(" = ")[0] for u in updates if u != "updated_at = CURRENT_TIMESTAMP"]
+        print(f"Updated user {chat_id}. Fields: {updated_fields_log}")
     else:
         # User does not exist, INSERT new user
-        # Ensure buy_amount_sol is explicitly NULL if not provided, not Python None
-        db_buy_amount = buy_amount_sol if buy_amount_sol is not None else None # Or sqlite3.SQLITE_NULL not really needed
         db_sol_address = solana_address if solana_address and solana_address.strip() else None
+        # Explicitly handle default for is_trading_enabled on insert
+        db_is_trading_enabled = True if is_trading_enabled is None else is_trading_enabled
 
         cursor.execute(
-            "INSERT INTO users (chat_id, linked_solana_address, buy_amount_sol) VALUES (?, ?, ?)",
-            (chat_id, db_sol_address, db_buy_amount)
+            """
+            INSERT INTO users (chat_id, linked_solana_address, buy_amount_sol, is_trading_enabled)
+            VALUES (?, ?, ?, ?)
+            """,
+            (chat_id, db_sol_address, buy_amount_sol, db_is_trading_enabled)
         )
-        print(f"Inserted new user {chat_id}")
+        print(f"Inserted new user {chat_id} with trading_enabled={db_is_trading_enabled}")
 
     conn.commit()
     conn.close()
@@ -143,47 +171,36 @@ def get_user_buy_amount(chat_id: int) -> float | None:
         return float(user['buy_amount_sol'])
     return None
 
+def get_user_trading_status(chat_id: int) -> bool:
+    """
+    Fetches the is_trading_enabled status for a user.
+    Defaults to False if user not found or status is NULL.
+    """
+    user = get_user(chat_id)
+    if user and user['is_trading_enabled'] is not None:
+        return bool(user['is_trading_enabled']) # Ensure it's a boolean
+    return False # Default to False if no user or no value
+
 
 if __name__ == '__main__':
     print(f"Initializing database '{DATABASE_FILE}'...")
-    init_db()
+    init_db() # This will also run the migration if column doesn't exist
     print("Database initialization process complete.")
 
-    # Example Usage & Testing:
+    # Example Usage & Testing for users table:
     test_chat_id1 = 12345
     test_chat_id2 = 67890
+    test_chat_id3 = 55555 # For testing trading status defaults
 
-    print(f"\n--- Testing DB operations for chat_id {test_chat_id1} ---")
-    upsert_user_settings(test_chat_id1) # Add user
-    print(f"User {test_chat_id1} data: {get_user(test_chat_id1)}")
-
-    upsert_user_settings(test_chat_id1, solana_address="TestWalletAddress123", buy_amount_sol=1.5)
-    print(f"User {test_chat_id1} data after update: {get_user(test_chat_id1)}")
-    print(f"Wallet for {test_chat_id1}: {get_user_linked_wallet(test_chat_id1)}")
-    print(f"Buy amount for {test_chat_id1}: {get_user_buy_amount(test_chat_id1)}")
-
-    upsert_user_settings(test_chat_id1, solana_address="NewWalletAddressABC") # Update only wallet
-    print(f"User {test_chat_id1} data after wallet update: {get_user(test_chat_id1)}")
-
-    upsert_user_settings(test_chat_id1, buy_amount_sol=0.5) # Update only buy amount
-    print(f"User {test_chat_id1} data after buy amount update: {get_user(test_chat_id1)}")
-
-    upsert_user_settings(test_chat_id1, solana_address="") # Unlink wallet
-    print(f"User {test_chat_id1} data after unlinking wallet: {get_user(test_chat_id1)}")
-    print(f"Wallet for {test_chat_id1} after unlink: {get_user_linked_wallet(test_chat_id1)}")
-
-    print(f"\n--- Testing DB operations for chat_id {test_chat_id2} ---")
-    upsert_user_settings(test_chat_id2, buy_amount_sol=2.2)
-    print(f"User {test_chat_id2} data: {get_user(test_chat_id2)}")
-    print(f"Wallet for {test_chat_id2}: {get_user_linked_wallet(test_chat_id2)}")
-    print(f"Buy amount for {test_chat_id2}: {get_user_buy_amount(test_chat_id2)}")
-
-    # Test fetching non-existent user
-    print(f"\n--- Testing non-existent user ---")
-    non_existent_user = 99999
-    print(f"User {non_existent_user} data: {get_user(non_existent_user)}")
-    print(f"Wallet for {non_existent_user}: {get_user_linked_wallet(non_existent_user)}")
-    print(f"Buy amount for {non_existent_user}: {get_user_buy_amount(non_existent_user)}")
+    print(f"\n--- Testing User Settings for chat_id {test_chat_id1} ---")
+    # These tests are now primarily covered by tests/core/test_db.py
+    # Leaving a minimal set for quick ad-hoc checks if needed.
+    upsert_user_settings(test_chat_id1, solana_address="MainWalletXYZ", buy_amount_sol=0.25, is_trading_enabled=True)
+    user1_data = get_user(test_chat_id1)
+    if user1_data:
+        print(f"User {test_chat_id1} data: Wallet={user1_data['linked_solana_address']}, BuyAmt={user1_data['buy_amount_sol']}, Trading={user1_data['is_trading_enabled']}")
+    else:
+        print(f"User {test_chat_id1} not found.")
 
 
 # --- Trades Table CRUD Operations ---
