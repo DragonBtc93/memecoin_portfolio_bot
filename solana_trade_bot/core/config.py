@@ -29,5 +29,11 @@ TAKE_PROFIT_LEVELS_PERCENTAGES: list[float] = [
 
 # Other potential configurations (examples):
 DATABASE_FILE: str = "solana_bot.db" # SQLite database file
+MONITOR_POLLING_INTERVAL_SECONDS: int = 60 # How often to check dev wallets for new mints
+
+# Common Token Mint Addresses
+USDC_MINT_ADDRESS: str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+SOL_MINT_ADDRESS: str = "So11111111111111111111111111111111111111112" # Wrapped SOL
+
 # PRICE_API_ENDPOINT: str = "https://api.jup.ag/v4/" # Example Jupiter API for prices
 # LOG_LEVEL: str = "INFO"

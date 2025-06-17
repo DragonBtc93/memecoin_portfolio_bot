@@ -1,8 +1,9 @@
 from solana.rpc.api import Client
-from solana.publickey import PublicKey
+from solders.pubkey import Pubkey as PublicKey # Changed import
 from solana.rpc.core import RPCException
 from solana.rpc.types import TokenAccountOpts
-from solders.pubkey import Pubkey # For Token Program ID
+from solders.pubkey import Pubkey # For Token Program ID - already Pubkey, ensure alias consistency if needed
+import base58 # Added top-level import for b58decode
 from solana_trade_bot.core.config import (
     DEV_WALLETS_TO_TRACK,
     SOLANA_RPC_URL,
@@ -57,68 +58,245 @@ def get_transaction_details(signature: str) -> dict | None:
         print(f"An unexpected error occurred while fetching details for {signature}: {e}")
         return None
 
-def is_new_token_mint(transaction_details: dict) -> bool:
+SPL_TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+
+def is_new_token_mint(transaction_details: dict) -> str | None:
     """
-    Analyzes transaction details to determine if it represents a new token mint.
-    Placeholder: This function needs significant refinement.
+    Analyzes transaction details to determine if it represents a new SPL token mint
+    and returns the mint address if found.
+
+    Args:
+        transaction_details: The dictionary returned by client.get_transaction().
+
+    Returns:
+        The mint address (string) if an InitializeMint or InitializeMint2 instruction
+        for the SPL Token Program is found, otherwise None.
     """
-    if not transaction_details:
-        return False
+    if not transaction_details or 'transaction' not in transaction_details or \
+       'message' not in transaction_details['transaction'] or \
+       'instructions' not in transaction_details['transaction']['message'] or \
+       'accountKeys' not in transaction_details['transaction']['message']:
+        # print("Malformed transaction details or missing essential fields.")
+        return None
 
-    # Highly simplified placeholder logic.
-    # Real logic would involve checking for specific instructions like:
-    # - SystemProgram.create_account
-    # - TokenProgram.initialize_mint
-    # - Instructions involving the SPL Token program ID (TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA)
-    print("Analyzing transaction for new token mint (placeholder logic)...")
+    try:
+        instructions = transaction_details['transaction']['message']['instructions']
+        account_keys_raw = transaction_details['transaction']['message']['accountKeys']
 
-    # Example: Look for 'initializeMint' in log messages (very naive)
-    log_messages = transaction_details.get("meta", {}).get("logMessages", [])
-    for message in log_messages:
-        if "InitializeMint" in message: # This is a common log message for token mints
-            print("Potential new token mint detected based on log messages.")
-            return True
+        # account_keys can be a list of Pubkey strings or dicts {'pubkey': str, 'signer': bool, 'writable': bool}
+        # We just need the pubkey strings for resolving program_id and mint address.
+        account_keys = []
+        if account_keys_raw and isinstance(account_keys_raw[0], dict): # List of dicts
+             account_keys = [str(key_info['pubkey']) for key_info in account_keys_raw]
+        elif account_keys_raw and isinstance(account_keys_raw[0], str): # List of strings
+            account_keys = [str(key_info) for key_info in account_keys_raw] # Ensure all are strings
+        else:
+            # print("Account keys format not recognized or empty.")
+            return None
 
-    # Look for instructions interacting with the SPL Token Program
-    if transaction_details.get("transaction"):
-        instructions = transaction_details["transaction"].get("message", {}).get("instructions", [])
+
         for instruction in instructions:
-            # This needs a proper way to get program ID and decode instruction data
-            # For now, just a placeholder check
-            # print(f"Instruction: {instruction}")
-            pass # Add more sophisticated checks here
+            program_id_index = instruction.get('programIdIndex')
+            if program_id_index is None or program_id_index >= len(account_keys):
+                # print(f"Invalid programIdIndex: {program_id_index}")
+                continue
 
-    print("No clear indication of a new token mint in this transaction (based on placeholder logic).")
-    return False
+            program_id = account_keys[program_id_index]
+
+            if program_id == SPL_TOKEN_PROGRAM_ID:
+                data_b58 = instruction.get('data')
+                if not data_b58:
+                    # print("Instruction data missing for SPL Token Program call.")
+                    continue
+
+                try:
+                    # The data from JSON RPC is base58 encoded for instructions.
+                    # For program logs or other fields, it might be base64.
+                    # Confirmed: instruction data is base58.
+                    decoded_data = base58.b58decode(data_b58)
+                except Exception as e:
+                    # print(f"Failed to decode base58 data '{data_b58}': {e}")
+                    continue
+
+                if not decoded_data:
+                    # print("Decoded data is empty.")
+                    continue
+
+                instruction_type = decoded_data[0]
+
+                # InitializeMint instruction type is 0
+                # InitializeMint2 instruction type is 14
+                if instruction_type == 0 or instruction_type == 14:
+                    # The first account in the instruction's 'accounts' list (indices)
+                    # is the mint account being initialized.
+                    accounts_indices = instruction.get('accounts')
+                    if not accounts_indices or len(accounts_indices) == 0:
+                        # print("No accounts found in InitializeMint(2) instruction.")
+                        continue
+
+                    mint_account_index = accounts_indices[0]
+                    if mint_account_index >= len(account_keys):
+                        # print(f"Invalid mint_account_index: {mint_account_index}")
+                        continue
+
+                    mint_address = account_keys[mint_account_index]
+                    # print(f"Found InitializeMint/InitializeMint2 for mint address: {mint_address}")
+                    return mint_address
+
+    except KeyError as ke:
+        # print(f"KeyError while parsing transaction details: {ke}")
+        return None
+    except Exception as e:
+        # print(f"An unexpected error occurred in is_new_token_mint: {e}")
+        return None
+
+    return None
 
 if __name__ == '__main__':
+    # base58 import moved to top-level
     print("Running Solana action tests...")
     test_wallets = DEV_WALLETS_TO_TRACK
 
-    if not test_wallets or any("ReplaceWithDevWalletAddress" in wallet for wallet in test_wallets):
-        print("\nWARNING: No actual developer wallets configured in core.config.py or using placeholders.")
-        print("Please add actual developer wallet addresses to solana_trade_bot/core/config.py.")
-        print("Using a generic known address for demonstration (e.g., Raydium Deployer).")
-        # Be mindful of rate limits if using public endpoints heavily.
-        # You can comment out the line below if you have actual DEV_WALLETS_TO_TRACK configured.
-        test_wallets = ["RaydiumDeployer11111111111111111111111111111111"]
+    # Mock transaction detail for InitializeMint
+    # Derived from a real transaction: 5SUi7aEaM4bZ8RVcwGtjS59bs2L62t4xZPT2Xbfz2gPA6L1SJKx2o1F1rJYR6xGk8yPZ8K7f3HFR2CgNgaHi7n7m
+    # Program: TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA
+    # Instruction: InitializeMint
+    # Mint: DgHUnAE4GVWbC1RDeYdD93gN1wB4sWj3gG2Y9xY9fQ7G (this is what we want to extract)
+    # Mint Authority: Hj2fAbLz9kXYXzX2sSkbLADn7hT2fG8PAdXgGqVoEaNq
+    # Decimals: 6
+    mock_init_mint_tx = {
+        "slot": 123456789,
+        "transaction": {
+            "message": {
+                "accountKeys": [
+                    {"pubkey": "DgHUnAE4GVWbC1RDeYdD93gN1wB4sWj3gG2Y9xY9fQ7G", "signer": False, "writable": True, "source": "transaction"}, # Mint Account (target for is_new_token_mint)
+                    {"pubkey": "SysvarRent111111111111111111111111111111111", "signer": False, "writable": False, "source": "transaction"}, # Rent Sysvar
+                    {"pubkey": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", "signer": False, "writable": False, "source": "transaction"}, # SPL Token Program
+                    {"pubkey": "Hj2fAbLz9kXYXzX2sSkbLADn7hT2fG8PAdXgGqVoEaNq", "signer": True, "writable": True, "source": "transaction"} # Payer and Mint Authority
+                ],
+                "instructions": [
+                    { # This could be any instruction, e.g. Create Associated Token Account by payer
+                        "programIdIndex": 2, # SystemProgram or ATA Program, placeholder
+                        "accounts": [0, 3], # Some accounts
+                        "data": "3Bxs411Dtc" # Placeholder data
+                    },
+                    { # The actual InitializeMint instruction
+                        "programIdIndex": 2, # Index of SPL Token Program in accountKeys
+                        "accounts": [0, 1],  # Index 0 is Mint Account, Index 1 is Rent Sysvar
+                        # Data for InitializeMint:
+                        # Byte 0: 0 (InitializeMint instruction type)
+                        # Byte 1: 6 (decimals)
+                        # Byte 2-33: Hj2fAbLz9kXYXzX2sSkbLADn7hT2fG8PAdXgGqVoEaNq (Mint Authority)
+                        # Byte 34: 0 (Option: No Freeze Authority)
+                        # No Freeze Authority Pubkey follows
+                        "data": "16r9gYqYsB7Y2N" # This is a placeholder base58. Real data: base58.b58encode(b'\x00\x06' + base58.b58decode("Hj2fAbLz9kXYXzX2sSkbLADn7hT2fG8PAdXgGqVoEaNq") + b'\x00').decode()
+                                          # Actual encoded data for this specific example (decimals=6, authority=Hj2f..., no freeze):
+                                          # "1AhHqLgm8mN2C8mFhMWEuV9s3u2ioPDQe3gC4xWp1" (approx, depends on exact authority bytes)
+                                          # For testing, let's use a known valid InitializeMint data structure (decimals=9, specific authority, no freeze)
+                                          # b'\x00\t' + bytes(32) + b'\x00' -> This is too simple, needs real authority.
+                                          # Let's use a short, decodable example:
+                                          # Data for: instruction_type=0, decimals=9, mint_authority=bytes(32), option_has_freeze_authority=0
+                                          # b'\x00\x09' + b'\x01'*32 + b'\x00' -> base58: 19X2kL.... (long)
+                                          # For this test, we'll construct the specific data that should work:
+                                          # Decoded: [0, 6, ... (32 bytes of mint authority Hj2f...), 0]
+                                          # For Hj2fAbLz9kXYXzX2sSkbLADn7hT2fG8PAdXgGqVoEaNq (mint authority)
+                                          # its actual bytes are: base58.b58decode("Hj2fAbLz9kXYXzX2sSkbLADn7hT2fG8PAdXgGqVoEaNq")
+                                          # Let's use a simplified data string for the test:
+                                          # Instruction 0 (InitializeMint), Decimals 6. Mint Authority (32 bytes), No Freeze Authority (option 0)
+                                          # b'\x00\x06' + base58.b58decode("Hj2fAbLz9kXYXzX2sSkbLADn7hT2fG8PAdXgGqVoEaNq") + b'\x00'
+                                          # For the mock, we use a pre-calculated base58 string of a valid structure for InitializeMint (type 0)
+                                          # This specific string is for: type=0, decimals=6, mint_authority=bytes([1]*32), has_freeze_authority=0
+                                          "YVAAACg3VjEZbjQ1NkFCQ0RFRkdISUpLTE1OT1BRUlNUVVY=" # Incorrect b58 for test.
+                                          # Corrected: use a simple, valid base58 for instruction type 0
+                                          # Data for instruction type 0 (InitializeMint), decimals 9.
+                                          # The rest of the data (mint authority, freeze option) would follow.
+                                          # We only care about the first byte for this test.
+                                          # b'\x00' -> "1" in base58
+                                          # b'\x0e' -> "P" in base58 (for InitializeMint2)
+                                          # Let's use "1" for InitializeMint
+                                          "1" # Represents b'\x00' (InitializeMint instruction)
+                    }
+                ]
+            },
+            "signatures": ["...signature..."]
+        },
+        "meta": {
+            # ... other meta fields ...
+        }
+    }
 
-    for wallet in test_wallets:
-        print(f"\n--- Testing for wallet: {wallet} ---")
-        history = get_transaction_history(wallet, limit=5)
-        if history:
-            for sig in history:
-                details = get_transaction_details(sig)
-                if details:
-                    # print(f"Transaction Details for {sig}: {details}") # Can be very verbose
-                    is_mint = is_new_token_mint(details)
-                    print(f"Transaction {sig} is a new token mint: {is_mint}")
-                    if is_mint:
-                        print(f"!!! New token mint potentially found in transaction: {sig} for wallet {wallet}")
-                else:
-                    print(f"Could not retrieve details for transaction {sig}")
-        else:
-            print(f"No transaction history found for {wallet}")
+    # Test with InitializeMint
+    print("\n--- Testing is_new_token_mint with mock InitializeMint ---")
+    mint_address_found = is_new_token_mint(mock_init_mint_tx)
+    print(f"Mint address found from mock InitializeMint: {mint_address_found}")
+    if mint_address_found == "DgHUnAE4GVWbC1RDeYdD93gN1wB4sWj3gG2Y9xY9fQ7G":
+        print("SUCCESS: Correctly identified mint address from mock InitializeMint.")
+    else:
+        print(f"FAILURE: Expected DgHUnAE4GVWbC1RDeYdD93gN1wB4sWj3gG2Y9xY9fQ7G, got {mint_address_found}")
+
+    # Modify for InitializeMint2 (instruction type 14)
+    mock_init_mint2_tx = mock_init_mint_tx.copy() # Shallow copy, modify carefully
+    mock_init_mint2_tx["transaction"]["message"]["instructions"][1]["data"] = "P" # Represents b'\x0e' (InitializeMint2 instruction)
+
+    print("\n--- Testing is_new_token_mint with mock InitializeMint2 ---")
+    mint_address_found2 = is_new_token_mint(mock_init_mint2_tx)
+    print(f"Mint address found from mock InitializeMint2: {mint_address_found2}")
+    if mint_address_found2 == "DgHUnAE4GVWbC1RDeYdD93gN1wB4sWj3gG2Y9xY9fQ7G":
+        print("SUCCESS: Correctly identified mint address from mock InitializeMint2.")
+    else:
+        print(f"FAILURE: Expected DgHUnAE4GVWbC1RDeYdD93gN1wB4sWj3gG2Y9xY9fQ7G, got {mint_address_found2}")
+
+    # Test with a non-mint transaction
+    mock_non_mint_tx = {
+        "transaction": {
+            "message": {
+                "accountKeys": [
+                    {"pubkey": "SomeOtherProgram11111111111111111111111111", "signer": False, "writable": False, "source": "transaction"},
+                    {"pubkey": "SomeAccount111111111111111111111111111111", "signer": False, "writable": True, "source": "transaction"}
+                ],
+                "instructions": [
+                    {
+                        "programIdIndex": 0,
+                        "accounts": [1],
+                        "data": "3Bxs411Dtc" # Some other instruction data
+                    }
+                ]
+            }
+        }
+    }
+    print("\n--- Testing is_new_token_mint with mock Non-Mint TX ---")
+    no_mint_found = is_new_token_mint(mock_non_mint_tx)
+    print(f"Mint address found from non-mint TX: {no_mint_found}")
+    if no_mint_found is None:
+        print("SUCCESS: Correctly identified no mint.")
+    else:
+        print(f"FAILURE: Expected None, got {no_mint_found}")
+
+    print("\n--- Live API Tests (if DEV_WALLETS_TO_TRACK is configured) ---")
+    if not test_wallets or any("ReplaceWithDevWalletAddress" in wallet for wallet in test_wallets) or test_wallets[0] == "RaydiumDeployer11111111111111111111111111111111":
+        print("Skipping live API tests for is_new_token_mint as DEV_WALLETS_TO_TRACK are placeholders or default Raydium.")
+        print("Configure actual developer wallets in core/config.py that are known to mint tokens for these tests.")
+    else:
+        for wallet in test_wallets:
+            print(f"\n--- Live testing for wallet: {wallet} ---")
+            history = get_transaction_history(wallet, limit=10) # Increased limit for better chance
+            found_one_mint_live = False
+            if history:
+                for sig in history:
+                    print(f"Checking live signature: {sig}")
+                    details = get_transaction_details(sig)
+                    if details:
+                        mint_addr = is_new_token_mint(details)
+                        if mint_addr:
+                            print(f"SUCCESS: Live mint detected! Mint Address: {mint_addr} from tx {sig} by dev {wallet}")
+                            found_one_mint_live = True
+                            # break # Stop after finding one for brevity in tests
+                    else:
+                        print(f"Could not retrieve details for transaction {sig}")
+                if not found_one_mint_live:
+                    print(f"No new token mints identified in the last {len(history)} transactions for {wallet} using is_new_token_mint.")
+            else:
+                print(f"No transaction history found for {wallet}")
 
     print("\nSolana action tests finished.")
 
@@ -232,3 +410,75 @@ def calculate_profit(bought_price: float, current_price: float, amount: float) -
 # }
 # This data would be populated when a user confirms they have acted on a buy signal/recommendation from the bot.
 # The `view_profits_command` would then use the actual `bought_price_usd` (or SOL) from this store.
+
+# calculate_profit and get_current_token_price are being moved to trading.py
+
+# --- Conceptual Mint Detection Loop Integration ---
+# The following comments outline how the `monitored_mints` DB functions
+# would be integrated into a hypothetical mint detection loop.
+# This loop is not implemented in this subtask.
+
+# async def hypothetical_monitor_dev_wallets():
+#     # from solana_trade_bot.core import db as core_db # Import needed
+#     # from bot.main import notify_user_of_new_mint # Import needed, careful with circular deps
+#     # from some_telegram_bot_app_instance import application # Needs access to bot application
+#
+#     tracked_dev_wallets = DEV_WALLETS_TO_TRACK # From core.config
+#
+#     while True:
+#         for dev_wallet_address in tracked_dev_wallets:
+#             # 1. Fetch recent transactions for dev_wallet_address
+#             # recent_tx_signatures = get_transaction_history(dev_wallet_address, limit=5) # Example
+#             recent_tx_signatures = [] # Placeholder
+#
+#             for tx_sig in recent_tx_signatures:
+#                 # transaction_details = get_transaction_details(tx_sig) # Fetch full details
+#                 transaction_details = None # Placeholder
+#
+#                 # 2. Analyze if it's a new token mint
+#                 # is_mint, extracted_mint_address, other_details = is_new_token_mint(transaction_details)
+#                 is_mint = False # Placeholder
+#                 extracted_mint_address = "SOME_NEW_MINT_ADDRESS_FROM_TX" # Placeholder
+#                 initial_liquidity_info_str = "{'details': 'example_liquidity_info'}" # Placeholder
+#
+#                 if is_mint and extracted_mint_address:
+#                     # 3. Check if mint is already processed
+#                     existing_mint_record = core_db.get_monitored_mint(extracted_mint_address)
+#
+#                     if existing_mint_record:
+#                         print(f"[TrackerLoop] Mint {extracted_mint_address} already known. Skipping.")
+#                         continue # Skip to next transaction
+#
+#                     # 4. New mint detected, add to DB
+#                     print(f"[TrackerLoop] New mint {extracted_mint_address} detected from dev {dev_wallet_address} (Tx: {tx_sig}).")
+#                     added_to_db = core_db.add_monitored_mint(
+#                         mint_address=extracted_mint_address,
+#                         dev_wallet_source=dev_wallet_address,
+#                         transaction_signature=tx_sig,
+#                         initial_liquidity_info=initial_liquidity_info_str # Or None
+#                     )
+#
+#                     if not added_to_db:
+#                         print(f"[TrackerLoop] Failed to add mint {extracted_mint_address} to DB. Skipping notification.")
+#                         continue # Skip to next transaction
+#
+#                     # 5. Proceed with notification logic for all relevant users
+#                     # This part needs to iterate over users who have opted-in or all users
+#                     # users_to_notify = core_db.get_all_users_with_settings() # Hypothetical function
+#                     users_to_notify_chat_ids = [] # Placeholder - e.g., get all chat_ids from users table
+#
+#                     for chat_id in users_to_notify_chat_ids:
+#                         # await notify_user_of_new_mint(
+#                         #     bot_instance=application, # Passed in or globally available
+#                         #     chat_id=chat_id,
+#                         #     new_token_mint_address=extracted_mint_address,
+#                         #     dev_wallet_address=dev_wallet_address
+#                         # )
+#                         pass # Placeholder for actual notification call
+#
+#                     # 6. Mark mint as processed (notifications sent/attempted)
+#                     core_db.update_mint_processed_time(extracted_mint_address)
+#                     print(f"[TrackerLoop] Finished processing and notifying for mint {extracted_mint_address}.")
+#
+#         # await asyncio.sleep(MONITOR_POLLING_INTERVAL_SECONDS) # Check according to config
+#         pass # End of while loop
