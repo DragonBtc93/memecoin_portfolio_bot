@@ -40,20 +40,15 @@ class TestUserTradingStatus(unittest.TestCase):
 
         # Call init_db to ensure tables are created in the :memory: db
         # Since DATABASE_FILE is patched to :memory:, init_db will operate on a fresh in-memory DB.
-        conn = get_db_connection() # This will use the patched :memory:
-        init_db(connection_to_use=conn) # Modify init_db to accept a connection
-        conn.close() # init_db should commit and close its own if not passed one.
-                      # Let's assume init_db uses get_db_connection which uses the patched path.
-                      # So, a simple init_db() call should suffice.
+        # conn = get_db_connection() # This will use the patched :memory: - Not needed here
+        # init_db(connection_to_use=conn) # init_db does not take this argument
+        # conn.close()
 
-        # To ensure a truly clean state for each test method if tests modify data,
-        # we'd ideally run init_db() before each test.
-        # The @patch at class level makes :memory: apply to all tests.
-        # Each get_db_connection() will get a new :memory: db if the previous one was closed.
-        # If get_db_connection() reuses a global connection for :memory:, that's an issue.
-        # Let's assume get_db_connection() always returns a new connection to :memory: due to the patch.
-        # The critical part is that init_db() should be callable repeatedly for :memory:.
-        # Our init_db has "CREATE TABLE IF NOT EXISTS", so it's safe.
+        # init_db() will use get_db_connection() which, due to the class-level patch,
+        # will use ':memory:'. Each call to init_db() effectively ensures the schema
+        # exists in the current in-memory database for that test method's scope if the
+        # :memory: db is truly ephemeral per connection and get_db_connection makes a new one.
+        # For safety and clarity that schema is applied for the test.
         init_db()
 
 

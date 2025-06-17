@@ -56,7 +56,9 @@ class TestMonitorLogic(unittest.TestCase):
         mock_processed_sig_set,      # P10
         mock_dev_wallets_in_monitor  # P11
     ):
-        self.skipTest("Skipping test_new_mint_processing_flow due to ongoing mock argument order issues / TypeErrors.")
+        # This test is skipped due to persistent TypeErrors with mock argument injection
+        # when many decorators are used with the async_test wrapper.
+        self.skipTest("Skipping test_new_mint_processing_flow due to mock argument injection issues.")
 
         # --- How this test WOULD be modified for is_trading_enabled ---
         # 1. Add another patch for `core_db.get_user_trading_status` to the decorator stack.
@@ -146,11 +148,12 @@ class TestMonitorLogic(unittest.TestCase):
             mock_db_get_user_trades.return_value = [mock_trade_entry]
 
             mock_trading_get_current_token_price.side_effect = [
-                100.0,
-                2.0
+                100.0, # Mock SOL price in USDC
+                2.0    # Mock Token price in USDC
             ]
 
-            mock_trading_check_take_profit_levels.return_value = (100, "Amazing profit! Target: +100%")
+            # check_take_profit_levels returns: (level, sell_fraction, message)
+            mock_trading_check_take_profit_levels.return_value = (100, 0.5, "Amazing profit! Target: +100%, Suggest selling 50%")
 
             mock_async_sleep.side_effect = asyncio.CancelledError
 
@@ -166,14 +169,14 @@ class TestMonitorLogic(unittest.TestCase):
 
             mock_trading_check_take_profit_levels.assert_called_once_with(
                 "TOKEN_MINT_FOR_TP",
-                2.0,
-                1.0,
-                None
+                2.0, # current_token_price_usdc
+                1.0, # bought_price_usd_per_token (0.01 SOL/token * $100 USD/SOL)
+                None # last_tp_notified_level
             )
 
             mock_bot.send_message.assert_called_once_with(
                 chat_id=12345,
-                text="Amazing profit! Target: +100%",
+                text="Amazing profit! Target: +100%, Suggest selling 50%",
                 parse_mode='Markdown'
             )
             mock_db_update_trade_status.assert_called_once_with(
