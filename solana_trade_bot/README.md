@@ -6,6 +6,19 @@ This project is a Python-based Telegram bot designed to monitor specific Solana 
 
 **Disclaimer:** This bot is experimental software. Trading memecoins is highly risky. Use this bot at your own risk. The information and tools provided by this bot do not constitute financial advice. Always do your own research (DYOR) before making any investment decisions.
 
+## Scalability & Performance Considerations
+
+**Important:** The current version of this bot is designed primarily for **single-user operation or very low concurrency levels.** It is **not suitable** for deployment to a large user base (e.g., hundreds or thousands of users) without significant architectural changes.
+
+Key limitations include:
+
+*   **Database:** Uses SQLite, which is file-based and not designed for high concurrent read/write loads. Scaling to many users would require migrating to a more robust database system like PostgreSQL or MySQL.
+*   **API Rate Limits:** Makes direct calls to public Solana RPC endpoints and other third-party APIs (e.g., Jupiter for price data). These public endpoints have rate limits that would be quickly exhausted under the load of many users or very frequent polling for many wallets.
+*   **Request Handling:** Lacks sophisticated request management, such as request queues, caching for API calls, or optimized handling of Solana RPC calls.
+*   **Concurrency Model:** While `asyncio` is used, scaling to a large number of simultaneous users and background tasks would likely require a more robust architecture, potentially involving background workers (e.g., Celery) for tasks like mass notifications, intensive database operations, or managing a large number of individual user monitoring loops.
+
+**Attempting to use the bot with a large number of users in its current state will likely lead to severe performance issues, API rate-limiting, and database contention.** Significant re-architecture and infrastructure considerations (e.g., private RPC nodes, database scaling solutions) are necessary for high-load scenarios.
+
 ## Features
 
 *   **Developer Wallet Monitoring:** Continuously monitors a list of specified Solana developer wallets for new transaction activity.
@@ -93,6 +106,33 @@ The bot uses an SQLite database (`solana_bot.db` by default) to store user infor
     python solana_trade_bot/core/db.py
     ```
     *(Ensure your current working directory is the project root `/app` or adjust path accordingly if running from within `solana_trade_bot` dir, e.g. `python core/db.py`)*
+
+*   **Local PostgreSQL Setup for Development/Testing (Optional):**
+    If you intend to use or test with PostgreSQL (`DATABASE_TYPE = "postgres"` in `core/config.py`), you'll need a running PostgreSQL instance. Docker is recommended for easy setup:
+    1.  **Run PostgreSQL in Docker:**
+        ```bash
+        docker run --name solana-bot-postgres \
+          -e POSTGRES_USER=your_pg_user \
+          -e POSTGRES_PASSWORD=your_pg_password \
+          -e POSTGRES_DB=solana_bot_db \
+          -p 5432:5432 \
+          -d postgres
+        ```
+        **Note:** Replace `your_pg_user`, `your_pg_password`, and `solana_bot_db` with the actual values you've set in your `solana_trade_bot/core/config.py` file for `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DBNAME`.
+    2.  **Connect via `psql` (optional, for verification):**
+        ```bash
+        docker exec -it solana-bot-postgres psql -U your_pg_user -d solana_bot_db
+        ```
+        Once connected, you can use commands like:
+        *   `\dt` to list tables (after running `python solana_trade_bot/core/pg_db.py` or the bot to initialize the schema).
+        *   `SELECT * FROM users;` to inspect data.
+        *   `\q` to quit `psql`.
+    3.  **Initialize Schema for PostgreSQL:**
+        If using PostgreSQL for the first time, after starting the Docker container and ensuring your `core/config.py` points to it with `DATABASE_TYPE = "postgres"`, run:
+        ```bash
+        python solana_trade_bot/core/pg_db.py
+        ```
+        Or simply start the bot, which will also attempt to initialize the configured database type.
 
 ## Running the Bot
 

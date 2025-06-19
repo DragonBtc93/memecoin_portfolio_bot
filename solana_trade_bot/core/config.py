@@ -27,8 +27,20 @@ TAKE_PROFIT_LEVELS_PERCENTAGES: list[float] = [
     200.0, # Notify at +200% gain (3x)
 ]
 
+# --- Database Configuration ---
+DATABASE_TYPE: str = "sqlite" # Options: "sqlite", "postgres"
+
+# SQLite Configuration (used if DATABASE_TYPE is "sqlite")
+DATABASE_FILE: str = "solana_bot.db"
+
+# PostgreSQL Connection Parameters (only used if DATABASE_TYPE is "postgres")
+POSTGRES_HOST: str = "localhost"
+POSTGRES_PORT: int = 5432
+POSTGRES_USER: str = "your_pg_user"       # Replace with your PostgreSQL username
+POSTGRES_PASSWORD: str = "your_pg_password" # Replace with your PostgreSQL password
+POSTGRES_DBNAME: str = "solana_bot_db"    # Replace with your PostgreSQL database name
+
 # Other potential configurations (examples):
-DATABASE_FILE: str = "solana_bot.db" # SQLite database file
 MONITOR_POLLING_INTERVAL_SECONDS: int = 60 # How often to check dev wallets for new mints
 
 # Common Token Mint Addresses
