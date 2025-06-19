@@ -84,10 +84,12 @@ Key configuration variables:
     *Example: `TELEGRAM_BOT_TOKEN = "1234567890:ABCDEFGHIJKLMN0PQRSTUVWXYZ1234567890"`*
 *   `DEV_WALLETS_TO_TRACK` (in `solana_trade_bot/core/config.py`): A Python list of Solana public key strings. These are the developer/deployer wallets the bot will monitor for new mints.
     *Example: `DEV_WALLETS_TO_TRACK = ["DevWalletAddress1...", "DevWalletAddress2..."]`*
-*   `SOLANA_RPC_URL` (in `solana_trade_bot/core/config.py`): The HTTP URL for your Solana RPC node. Public nodes can be rate-limited.
+*   `SOLANA_RPC_URL` (in `solana_trade_bot/core/config.py`): The HTTP URL for your Solana RPC node. Public nodes can be rate-limited. Used for fetching transaction details, token information, and market data.
     *Example: `SOLANA_RPC_URL = "https://api.mainnet-beta.solana.com"`*
+*   `SOLANA_WS_URL` (in `solana_trade_bot/core/config.py`): The WebSocket URL for your Solana RPC node. Used for real-time subscription to logs for new mint detection.
+    *Example: `SOLANA_WS_URL = "wss://api.mainnet-beta.solana.com"`*
 *   `MIN_BUY_SOL` / `MAX_BUY_SOL` (in `solana_trade_bot/core/config.py`): Minimum and maximum SOL amount a user can set for a single buy notification.
-*   `MONITOR_POLLING_INTERVAL_SECONDS` (in `solana_trade_bot/core/config.py`): How frequently (in seconds) the bot checks the developer wallets.
+*   `TAKE_PROFIT_POLLING_INTERVAL_SECONDS` (in `solana_trade_bot/core/config.py`): How often (in seconds) the bot checks for take-profit conditions on confirmed trades. Default is `300` (5 minutes).
 *   `TAKE_PROFIT_LEVELS_PERCENTAGES` (in `solana_trade_bot/core/config.py`): A list of profit percentages (e.g., `[25.0, 50.0, 100.0, 200.0]`) that trigger take-profit alerts.
 *   `TAKE_PROFIT_SELL_SCHEDULE` (in `solana_trade_bot/core/config.py`): A dictionary defining what percentage of current holdings to suggest selling when a take-profit level is triggered.
     *Example: `{25.0: 0.30, 50.0: 0.50, 100.0: 1.0}` means at 25% profit, sell 30% of tokens; at 50% profit, sell 50% of remaining tokens for that trade; at 100% profit, sell all remaining tokens.

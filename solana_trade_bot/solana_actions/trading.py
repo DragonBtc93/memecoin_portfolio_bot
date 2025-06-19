@@ -305,39 +305,8 @@ def get_current_token_prices_batch(token_mint_addresses: list[str], vs_token: st
     return final_results
 
 
-# Original get_current_token_price - keep for reference or remove after refactor below
-# def get_current_token_price(token_mint_address: str, vs_token: str = "USDC") -> float | None:
-#     api_url = f"https://price.jup.ag/v4/price?ids={token_mint_address}&vsToken={vs_token}"
-#     logger.info(f"Fetching price for {token_mint_address} vs {vs_token} from Jupiter API: {api_url}")
-#     try:
-#         response = requests.get(api_url, timeout=10)
-        response.raise_for_status()
-        response_data = response.json()
-        logger.debug(f"Jupiter API response: {response_data}")
-        if 'data' in response_data and token_mint_address in response_data['data']:
-            price_data = response_data['data'][token_mint_address]
-            price = price_data.get('price')
-            if price is not None:
-                logger.info(f"Price for {token_mint_address} ({price_data.get('mintSymbol', 'N/A')}) vs {vs_token}: {price}")
-                return float(price)
-            else:
-                logger.warning(f"Price data not found for {token_mint_address} in Jupiter response. Full data: {price_data}")
-                return None
-        else:
-            logger.warning(f"Token {token_mint_address} not found in Jupiter API response data. Full response: {response_data}")
-            return None
-    except requests.exceptions.HTTPError as http_err:
-        logger.error(f"HTTP error occurred while fetching price for {token_mint_address}: {http_err} - Response: {response.text if 'response' in locals() else 'No response object'}")
-        return None
-    except requests.exceptions.RequestException as req_err:
-        logger.error(f"Request error occurred while fetching price for {token_mint_address}: {req_err}")
-        return None
-    except ValueError as json_err:
-        logger.error(f"JSON decoding error while fetching price for {token_mint_address}: {json_err} - Response: {response.text if 'response' in locals() else 'No response object'}")
-        return None
-    except Exception as e:
-        logger.error(f"An unexpected error occurred while fetching price for {token_mint_address}: {e}", exc_info=True)
-        return None
+# The old get_current_token_price function block was here and caused an IndentationError.
+# It has been removed as the cached/batched implementation is now primary.
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')

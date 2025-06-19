@@ -10,8 +10,13 @@ from solana_trade_bot.core.config import MIN_BUY_SOL, MAX_BUY_SOL, SOL_MINT_ADDR
 from solana_trade_bot.solana_actions import trading as solana_trading
 from solana_trade_bot.solana_actions import tracker as solana_tracker
 from solana_trade_bot.core import db as core_db
+from solana_trade_bot.core.config import DATABASE_TYPE # Import DATABASE_TYPE
+# Import pool functions, ensure pg_db is imported if DATABASE_TYPE could be postgres
+# This import might be conditional if pg_db itself fails on non-pg systems without psycopg2
+# For now, assume it's safe to import, or handle import error.
+from solana_trade_bot.core.pg_db import init_connection_pool, close_connection_pool
 import solana_trade_bot.core.monitor as core_monitor_module
-from solana.rpc.api import Client # For type hinting solana_client # Will be used in notifications.py
+from solana.rpc.api import Client # For type hinting solana_client
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -264,9 +269,19 @@ async def view_profits_command(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("An error occurred calculating profits.")
 
 async def main_async() -> None:
-    logger.info("Initializing database...")
+    logger.info(f"Selected DATABASE_TYPE: {DATABASE_TYPE}")
+    if DATABASE_TYPE == "postgres":
+        logger.info("Initializing PostgreSQL connection pool...")
+        try:
+            init_connection_pool() # From core.pg_db
+        except Exception as e:
+            logger.error(f"Failed to initialize PostgreSQL connection pool: {e}", exc_info=True)
+            # Decide if bot should exit or try to run without DB/with fallback if designed
+            return # Exit if essential DB pool fails
+
+    logger.info("Initializing database schema (via dispatcher)...")
     core_db.init_db()
-    logger.info("Database initialized.")
+    logger.info("Database schema initialized.")
 
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     bot_instance = application.bot
@@ -293,7 +308,13 @@ async def main_async() -> None:
     logger.info("Wallet monitoring task created.")
 
     logger.info("Starting bot polling...")
-    await application.run_polling()
+    try:
+        await application.run_polling()
+    finally:
+        if DATABASE_TYPE == "postgres":
+            logger.info("Shutting down PostgreSQL connection pool...")
+            close_connection_pool() # From core.pg_db
+        logger.info("Bot shut down gracefully.")
 
 if __name__ == "__main__":
     logger.info("Bot application starting...")

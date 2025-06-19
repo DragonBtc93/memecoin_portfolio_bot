@@ -8,7 +8,8 @@ from solana_trade_bot.core.pg_db import (
     upsert_user_settings_pg,
     get_user_trading_status_pg,
     get_user_pg,
-    get_pg_connection, # For clearing tables
+    get_pg_connection_from_pool, # Updated for connection pooling
+    put_pg_connection_to_pool,   # Updated for connection pooling
     get_user_linked_wallet_pg,
     get_user_buy_amount_pg
 )
@@ -42,7 +43,7 @@ class TestPgUserTradingStatus(unittest.TestCase):
             init_db_pg()
 
             # Get a connection to clear tables for test isolation
-            self.conn = get_pg_connection()
+            self.conn = get_pg_connection_from_pool()
             self._clear_tables(self.conn)
         except psycopg2.Error as e:
             self.skipTest(f"Skipping PostgreSQL tests: Cannot connect to or initialize PG database: {e}")
@@ -51,11 +52,12 @@ class TestPgUserTradingStatus(unittest.TestCase):
 
 
     def tearDown(self):
-        """Close the connection after each test."""
+        """Return the connection to the pool after each test."""
         if hasattr(self, 'conn') and self.conn:
             # Clear tables again to leave DB clean after tests if desired
             # self._clear_tables(self.conn)
-            self.conn.close()
+            put_pg_connection_to_pool(self.conn)
+            self.conn = None # Ensure it's not accidentally reused
 
     def test_default_trading_status_on_new_user_pg(self):
         """Test that a new PG user gets is_trading_enabled=True by default on insert."""
@@ -150,7 +152,7 @@ class TestPgTradesTable(unittest.TestCase):
     def setUp(self):
         try:
             init_db_pg() # Ensure schema exists
-            self.conn = get_pg_connection()
+            self.conn = get_pg_connection_from_pool()
             with self.conn.cursor() as cur:
                 # Clear tables in order respecting FK constraints, or use CASCADE
                 cur.execute("TRUNCATE TABLE trades RESTART IDENTITY CASCADE;")
@@ -163,7 +165,8 @@ class TestPgTradesTable(unittest.TestCase):
 
     def tearDown(self):
         if hasattr(self, 'conn') and self.conn:
-            self.conn.close()
+            put_pg_connection_to_pool(self.conn)
+            self.conn = None # Ensure it's not accidentally reused
 
     def test_add_and_get_trade_notification_pg(self):
         trade_id = add_trade_notification_pg(1, "mint1", "dev1", "notified_buy")
@@ -231,7 +234,7 @@ class TestPgMonitoredMintsTable(unittest.TestCase):
     def setUp(self):
         try:
             init_db_pg() # Ensure schema exists
-            self.conn = get_pg_connection()
+            self.conn = get_pg_connection_from_pool()
             with self.conn.cursor() as cur:
                 cur.execute("TRUNCATE TABLE monitored_mints RESTART IDENTITY CASCADE;")
             self.conn.commit()
@@ -240,7 +243,8 @@ class TestPgMonitoredMintsTable(unittest.TestCase):
 
     def tearDown(self):
         if hasattr(self, 'conn') and self.conn:
-            self.conn.close()
+            put_pg_connection_to_pool(self.conn)
+            self.conn = None # Ensure it's not accidentally reused
 
     def test_add_and_get_monitored_mint_pg(self):
         mint_addr = "TestMintPG001"

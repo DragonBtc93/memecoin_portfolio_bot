@@ -39,9 +39,11 @@ POSTGRES_PORT: int = 5432
 POSTGRES_USER: str = "your_pg_user"       # Replace with your PostgreSQL username
 POSTGRES_PASSWORD: str = "your_pg_password" # Replace with your PostgreSQL password
 POSTGRES_DBNAME: str = "solana_bot_db"    # Replace with your PostgreSQL database name
+POSTGRES_POOL_MIN_CONN: int = 1
+POSTGRES_POOL_MAX_CONN: int = 5 # Max connections in the pool
 
 # Other potential configurations (examples):
-MONITOR_POLLING_INTERVAL_SECONDS: int = 60 # How often to check dev wallets for new mints
+TAKE_PROFIT_POLLING_INTERVAL_SECONDS: int = 300 # How often to check for take profits (e.g., 5 minutes)
 
 # Common Token Mint Addresses
 USDC_MINT_ADDRESS: str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
@@ -62,3 +64,7 @@ TAKE_PROFIT_SELL_SCHEDULE: dict[float, float] = {
 # LOG_LEVEL: str = "INFO"
 
 NUM_NOTIFICATION_WORKERS: int = 3 # Number of concurrent workers processing notification queue
+
+# --- WebSocket Monitor Configuration ---
+SOLANA_WS_URL: str = "wss://api.mainnet-beta.solana.com" # Or your private RPC's WS endpoint
+WS_RECONNECT_DELAY_SECONDS: int = 5 # Delay before attempting to reconnect on WS error
