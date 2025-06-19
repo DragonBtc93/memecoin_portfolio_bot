@@ -142,3 +142,139 @@ if __name__ == '__main__':
     # This allows running this test file directly if PG is configured.
     # Note: The skip_if_default_pg_credentials decorator will apply.
     unittest.main()
+
+
+@skip_if_default_pg_credentials
+class TestPgTradesTable(unittest.TestCase):
+
+    def setUp(self):
+        try:
+            init_db_pg() # Ensure schema exists
+            self.conn = get_pg_connection()
+            with self.conn.cursor() as cur:
+                # Clear tables in order respecting FK constraints, or use CASCADE
+                cur.execute("TRUNCATE TABLE trades RESTART IDENTITY CASCADE;")
+                cur.execute("TRUNCATE TABLE users RESTART IDENTITY CASCADE;") # Also clears users for FK
+            self.conn.commit()
+            # Add a dummy user for FK constraints in trades table
+            upsert_user_settings_pg(1, "dummy_wallet_for_trades", 0.1, True)
+        except psycopg2.Error as e:
+            self.skipTest(f"Skipping PostgreSQL Trades tests: Cannot connect/init PG DB: {e}")
+
+    def tearDown(self):
+        if hasattr(self, 'conn') and self.conn:
+            self.conn.close()
+
+    def test_add_and_get_trade_notification_pg(self):
+        trade_id = add_trade_notification_pg(1, "mint1", "dev1", "notified_buy")
+        self.assertIsNotNone(trade_id)
+        trade = get_trade_by_id_pg(trade_id)
+        self.assertIsNotNone(trade)
+        self.assertEqual(trade['chat_id'], 1)
+        self.assertEqual(trade['token_mint_address'], "mint1")
+        self.assertEqual(trade['status'], "notified_buy")
+
+    def test_update_trade_on_buy_confirmation_pg(self):
+        trade_id = add_trade_notification_pg(1, "mint2", "dev2")
+        self.assertIsNotNone(trade_id)
+
+        updated = update_trade_on_buy_confirmation_pg(trade_id, 1000.0, 0.5, 0.0005)
+        self.assertTrue(updated)
+
+        trade = get_trade_by_id_pg(trade_id)
+        self.assertIsNotNone(trade)
+        self.assertEqual(trade['status'], "confirmed_buy")
+        self.assertEqual(trade['tokens_bought'], 1000.0)
+        self.assertEqual(trade['sol_spent'], 0.5)
+        self.assertEqual(trade['sol_price_at_buy'], 0.0005)
+        self.assertIsNotNone(trade['buy_confirmed_at'])
+
+    def test_get_user_trades_pg(self):
+        upsert_user_settings_pg(2, "user2_wallet", 0.2, True) # Another user
+        add_trade_notification_pg(1, "mint_A", "devA", "notified_buy")
+        trade_id_B = add_trade_notification_pg(1, "mint_B", "devB", "notified_buy")
+        update_trade_on_buy_confirmation_pg(trade_id_B, 500, 0.2, 0.0004) # status becomes 'confirmed_buy'
+        add_trade_notification_pg(1, "mint_C", "devC", "sold_all") # Not an open trade
+        add_trade_notification_pg(2, "mint_D_user2", "devD", "confirmed_buy") # Trade for another user
+
+        open_trades_user1 = get_user_trades_pg(1, only_open=True)
+        self.assertEqual(len(open_trades_user1), 1) # Only mint_B should be 'confirmed_buy'
+        self.assertEqual(open_trades_user1[0]['token_mint_address'], "mint_B")
+
+        all_trades_user1 = get_user_trades_pg(1, only_open=False)
+        self.assertEqual(len(all_trades_user1), 3) # mint_A, mint_B, mint_C
+
+        open_trades_user2 = get_user_trades_pg(2, only_open=True)
+        self.assertEqual(len(open_trades_user2), 1)
+        self.assertEqual(open_trades_user2[0]['token_mint_address'], "mint_D_user2")
+
+    def test_update_trade_status_pg(self):
+        trade_id = add_trade_notification_pg(1, "mint_status_test", "dev_status")
+        self.assertIsNotNone(trade_id)
+
+        updated = update_trade_status_pg(trade_id, "notified_tp1", 25)
+        self.assertTrue(updated)
+        trade = get_trade_by_id_pg(trade_id)
+        self.assertEqual(trade['status'], "notified_tp1")
+        self.assertEqual(trade['last_tp_notified_level'], 25)
+
+        updated_again = update_trade_status_pg(trade_id, "sold_partial")
+        self.assertTrue(updated_again)
+        trade_again = get_trade_by_id_pg(trade_id)
+        self.assertEqual(trade_again['status'], "sold_partial")
+        self.assertEqual(trade_again['last_tp_notified_level'], 25) # Should remain if not updated
+
+
+@skip_if_default_pg_credentials
+class TestPgMonitoredMintsTable(unittest.TestCase):
+
+    def setUp(self):
+        try:
+            init_db_pg() # Ensure schema exists
+            self.conn = get_pg_connection()
+            with self.conn.cursor() as cur:
+                cur.execute("TRUNCATE TABLE monitored_mints RESTART IDENTITY CASCADE;")
+            self.conn.commit()
+        except psycopg2.Error as e:
+            self.skipTest(f"Skipping PostgreSQL MonitoredMints tests: Cannot connect/init PG DB: {e}")
+
+    def tearDown(self):
+        if hasattr(self, 'conn') and self.conn:
+            self.conn.close()
+
+    def test_add_and_get_monitored_mint_pg(self):
+        mint_addr = "TestMintPG001"
+        added1 = add_monitored_mint_pg(mint_addr, "DevWalletSourcePG", "TxSigPG001", "{'pool':'xyz'}")
+        self.assertTrue(added1)
+
+        mint_info = get_monitored_mint_pg(mint_addr)
+        self.assertIsNotNone(mint_info)
+        self.assertEqual(mint_info['dev_wallet_source'], "DevWalletSourcePG")
+        self.assertEqual(mint_info['initial_liquidity_info'], "{'pool':'xyz'}")
+
+        # Try adding the same mint again
+        added2 = add_monitored_mint_pg(mint_addr, "AnotherDev", "AnotherTx")
+        self.assertFalse(added2, "Adding the same mint address again should return False due to ON CONFLICT DO NOTHING if rowcount is 0")
+
+        mint_info_after = get_monitored_mint_pg(mint_addr) # Should still be the first one
+        self.assertEqual(mint_info_after['dev_wallet_source'], "DevWalletSourcePG")
+
+
+    def test_update_mint_processed_time_pg(self):
+        mint_addr = "TestMintPG002"
+        add_monitored_mint_pg(mint_addr, "DevWalletSourcePG2", "TxSigPG002")
+
+        mint_before = get_monitored_mint_pg(mint_addr)
+        self.assertIsNotNone(mint_before)
+        self.assertIsNone(mint_before['processed_by_bot_at'])
+
+        updated = update_mint_processed_time_pg(mint_addr)
+        self.assertTrue(updated)
+
+        mint_after = get_monitored_mint_pg(mint_addr)
+        self.assertIsNotNone(mint_after)
+        self.assertIsNotNone(mint_after['processed_by_bot_at'])
+
+        # Test update on non-existent mint
+        updated_non_existent = update_mint_processed_time_pg("NonExistentMintAddressPG")
+        self.assertFalse(updated_non_existent)

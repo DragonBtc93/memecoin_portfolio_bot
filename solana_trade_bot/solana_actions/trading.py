@@ -2,6 +2,7 @@ import urllib.parse
 import requests # For Jupiter API
 import logging
 import base58
+from cachetools import TTLCache, cached
 
 from solana_trade_bot.core.config import TAKE_PROFIT_LEVELS_PERCENTAGES, SOL_MINT_ADDRESS, TAKE_PROFIT_SELL_SCHEDULE
 
@@ -208,11 +209,99 @@ def calculate_profit(bought_price: float, current_price: float, amount: float) -
         return 0.0
     return (current_price - bought_price) * amount
 
+# Cache for Jupiter API price calls
+# Cache up to 1000 different mint prices, each for 10 seconds
+price_cache = TTLCache(maxsize=1000, ttl=10)
+
+@cached(cache=price_cache)
 def get_current_token_price(token_mint_address: str, vs_token: str = "USDC") -> float | None:
-    api_url = f"https://price.jup.ag/v4/price?ids={token_mint_address}&vsToken={vs_token}"
-    logger.info(f"Fetching price for {token_mint_address} vs {vs_token} from Jupiter API: {api_url}")
-    try:
-        response = requests.get(api_url, timeout=10)
+    """
+    Fetches the current market price of a single token using Jupiter Price API.
+    This function is cached. On a cache miss, it uses the batch fetching function.
+    """
+    # The @cached decorator handles the cache lookup.
+    # This code block below will only execute on a cache miss.
+    logger.info(f"CACHE MISS (single request): Fetching price for {token_mint_address} vs {vs_token} via batch function.")
+    batch_result = get_current_token_prices_batch([token_mint_address], vs_token=vs_token)
+    return batch_result.get(token_mint_address)
+
+def get_current_token_prices_batch(token_mint_addresses: list[str], vs_token: str = "USDC") -> dict[str, float | None]:
+    """
+    Fetches current market prices for a list of tokens using Jupiter Price API, utilizing a cache.
+    Args:
+        token_mint_addresses: A list of token mint address strings.
+        vs_token: The symbol of the token to compare against (e.g., "USDC", "SOL").
+    Returns:
+        A dictionary mapping mint addresses to their price (float) or None if not found/error.
+    """
+    results: dict[str, float | None] = {}
+    mints_to_fetch_from_api: list[str] = []
+
+    # Phase 1: Check cache for each token
+    for mint_address in token_mint_addresses:
+        cache_key = (mint_address, vs_token) # Match how @cached would form its key for get_current_token_price
+        cached_price = price_cache.get(cache_key)
+        if cached_price is not None:
+            results[mint_address] = cached_price
+            logger.debug(f"BATCH CACHE HIT: Price for {mint_address} vs {vs_token} found in cache: {cached_price}")
+        else:
+            if mint_address not in mints_to_fetch_from_api: # Avoid duplicates if input list had them
+                 mints_to_fetch_from_api.append(mint_address)
+
+    # Phase 2: Fetch remaining tokens from API
+    if mints_to_fetch_from_api:
+        ids_string = ",".join(mints_to_fetch_from_api)
+        api_url = f"https://price.jup.ag/v4/price?ids={ids_string}&vsToken={vs_token}"
+        logger.info(f"BATCH CACHE MISS: Fetching prices for {len(mints_to_fetch_from_api)} tokens vs {vs_token} from API: {ids_string}")
+
+        try:
+            response = requests.get(api_url, timeout=10)
+            response.raise_for_status()
+            response_data = response.json()
+            logger.debug(f"Jupiter API batch response: {response_data}")
+
+            if 'data' in response_data:
+                api_price_data = response_data['data']
+                for mint_address in mints_to_fetch_from_api:
+                    if mint_address in api_price_data and api_price_data[mint_address].get('price') is not None:
+                        price = float(api_price_data[mint_address]['price'])
+                        results[mint_address] = price
+                        price_cache[(mint_address, vs_token)] = price # Manually update cache
+                        logger.info(f"API FETCH SUCCESS: Price for {mint_address} ({api_price_data[mint_address].get('mintSymbol','N/A')}) vs {vs_token}: {price}. Stored in cache.")
+                    else:
+                        results[mint_address] = None
+                        # Optionally, cache None with a shorter TTL if desired, e.g.:
+                        # price_cache[(mint_address, vs_token)] = None # Or a specific marker with short TTL
+                        logger.warning(f"API FETCH: Price data not found for {mint_address} in Jupiter batch response.")
+            else:
+                logger.warning(f"API FETCH: 'data' field missing in Jupiter batch response for mints: {ids_string}")
+                for mint_address in mints_to_fetch_from_api: # Ensure all requested mints get a None result
+                    results[mint_address] = None
+
+        except requests.exceptions.HTTPError as http_err:
+            logger.error(f"HTTP error occurred during batch price fetch: {http_err} - Response: {response.text if 'response' in locals() else 'No response object'}")
+            for mint_address in mints_to_fetch_from_api: results[mint_address] = None
+        except requests.exceptions.RequestException as req_err:
+            logger.error(f"Request error occurred during batch price fetch: {req_err}")
+            for mint_address in mints_to_fetch_from_api: results[mint_address] = None
+        except ValueError as json_err:
+            logger.error(f"JSON decoding error during batch price fetch: {json_err} - Response: {response.text if 'response' in locals() else 'No response object'}")
+            for mint_address in mints_to_fetch_from_api: results[mint_address] = None
+        except Exception as e:
+            logger.error(f"An unexpected error occurred during batch price fetch: {e}", exc_info=True)
+            for mint_address in mints_to_fetch_from_api: results[mint_address] = None
+    else:
+        logger.info("BATCH CACHE HIT: All requested token prices were found in cache.")
+
+    return results
+
+
+# Original get_current_token_price - keep for reference or remove after refactor below
+# def get_current_token_price(token_mint_address: str, vs_token: str = "USDC") -> float | None:
+#     api_url = f"https://price.jup.ag/v4/price?ids={token_mint_address}&vsToken={vs_token}"
+#     logger.info(f"Fetching price for {token_mint_address} vs {vs_token} from Jupiter API: {api_url}")
+#     try:
+#         response = requests.get(api_url, timeout=10)
         response.raise_for_status()
         response_data = response.json()
         logger.debug(f"Jupiter API response: {response_data}")

@@ -3,3 +3,4 @@ solana
 requests
 base58
 psycopg2-binary
+cachetools

@@ -2,16 +2,16 @@ import unittest
 import sqlite3
 from unittest.mock import patch
 
-# Import functions to be tested from solana_trade_bot.core.db
-from solana_trade_bot.core.db import (
-    init_db,
-    upsert_user_settings,
-    get_user_trading_status,
-    get_user, # Helper for verification
-    get_db_connection # To directly manipulate test DB if needed, or verify schema
+# Import functions to be tested from solana_trade_bot.core.sqlite_db
+from solana_trade_bot.core.sqlite_db import (
+    init_db_sqlite as init_db, # Use _sqlite suffixed functions
+    upsert_user_settings_sqlite as upsert_user_settings,
+    get_user_trading_status_sqlite as get_user_trading_status,
+    get_user_sqlite as get_user,
+    get_db_connection_sqlite as get_db_connection
 )
-# Import DATABASE_FILE to be patched
-import solana_trade_bot.core.config as core_config
+# Import DATABASE_FILE to be patched from where it's defined
+from solana_trade_bot.core import config as core_config
 
 # Store the original DATABASE_FILE value to reset it later if necessary, though patch should handle this.
 ORIGINAL_DATABASE_FILE = core_config.DATABASE_FILE

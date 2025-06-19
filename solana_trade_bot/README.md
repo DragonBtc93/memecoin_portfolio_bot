@@ -15,7 +15,7 @@ Key limitations include:
 *   **Database:** Uses SQLite, which is file-based and not designed for high concurrent read/write loads. Scaling to many users would require migrating to a more robust database system like PostgreSQL or MySQL.
 *   **API Rate Limits:** Makes direct calls to public Solana RPC endpoints and other third-party APIs (e.g., Jupiter for price data). These public endpoints have rate limits that would be quickly exhausted under the load of many users or very frequent polling for many wallets.
 *   **Request Handling:** Lacks sophisticated request management, such as request queues, caching for API calls, or optimized handling of Solana RPC calls.
-*   **Concurrency Model:** While `asyncio` is used, scaling to a large number of simultaneous users and background tasks would likely require a more robust architecture, potentially involving background workers (e.g., Celery) for tasks like mass notifications, intensive database operations, or managing a large number of individual user monitoring loops.
+*   **Concurrency Model:** While `asyncio` is used (including an asynchronous queue and worker system for sending new mint notifications to improve responsiveness), scaling to a large number of simultaneous users and background tasks would likely require a more robust architecture, potentially involving dedicated background workers (e.g., Celery) for tasks like mass notifications, intensive database operations, or managing a large number of individual user monitoring loops.
 
 **Attempting to use the bot with a large number of users in its current state will likely lead to severe performance issues, API rate-limiting, and database contention.** Significant re-architecture and infrastructure considerations (e.g., private RPC nodes, database scaling solutions) are necessary for high-load scenarios.
 
@@ -92,6 +92,7 @@ Key configuration variables:
 *   `TAKE_PROFIT_SELL_SCHEDULE` (in `solana_trade_bot/core/config.py`): A dictionary defining what percentage of current holdings to suggest selling when a take-profit level is triggered.
     *Example: `{25.0: 0.30, 50.0: 0.50, 100.0: 1.0}` means at 25% profit, sell 30% of tokens; at 50% profit, sell 50% of remaining tokens for that trade; at 100% profit, sell all remaining tokens.
     *If a level in `TAKE_PROFIT_LEVELS_PERCENTAGES` is not a key in `TAKE_PROFIT_SELL_SCHEDULE`, the notification will be a price alert without a specific sell suggestion.*
+*   `NUM_NOTIFICATION_WORKERS` (in `solana_trade_bot/core/config.py`): Number of concurrent worker tasks that process and send Telegram notifications for new mints. This helps in managing the load of sending multiple messages. Default is `3`.
 *   `DATABASE_FILE` (in `solana_trade_bot/core/config.py`): Name of the SQLite database file. Defaults to `solana_bot.db`.
 *   `SOL_MINT_ADDRESS` / `USDC_MINT_ADDRESS` (in `solana_trade_bot/core/config.py`): Mint addresses for Wrapped SOL and USDC, used for price conversions.
 *   **Note on User Defaults:** New users who `/start` the bot will have trading notifications ON by default. They can use `/trade_off` to disable them.

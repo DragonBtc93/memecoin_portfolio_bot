@@ -60,3 +60,5 @@ TAKE_PROFIT_SELL_SCHEDULE: dict[float, float] = {
 
 # PRICE_API_ENDPOINT: str = "https://api.jup.ag/v4/" # Example Jupiter API for prices
 # LOG_LEVEL: str = "INFO"
+
+NUM_NOTIFICATION_WORKERS: int = 3 # Number of concurrent workers processing notification queue

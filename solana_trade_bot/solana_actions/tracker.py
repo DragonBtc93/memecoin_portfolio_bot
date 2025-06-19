@@ -1,9 +1,12 @@
 from solana.rpc.api import Client
-from solders.pubkey import Pubkey as PublicKey # Changed import
+from solders.pubkey import Pubkey as PublicKey
 from solana.rpc.core import RPCException
 from solana.rpc.types import TokenAccountOpts
-from solders.pubkey import Pubkey # For Token Program ID - already Pubkey, ensure alias consistency if needed
-import base58 # Added top-level import for b58decode
+from solders.pubkey import Pubkey as SoldersPubkey # Renamed for clarity if PublicKey alias is used
+import base58
+import logging # Added for logging cache misses/hits if desired
+from cachetools import TTLCache, cached
+# import threading # RLock not needed for basic @cached usage
 from solana_trade_bot.core.config import (
     DEV_WALLETS_TO_TRACK,
     SOLANA_RPC_URL,
@@ -12,12 +15,29 @@ from solana_trade_bot.core.config import (
 
 # Initialize Solana client
 solana_client = Client(SOLANA_RPC_URL)
+logger = logging.getLogger(__name__) # For logging within this module
 
+# --- Caches ---
+# Cache for get_transaction_history (signatures for address)
+# Cache history for 100 wallets, each for 10 seconds (data changes frequently)
+tx_history_cache = TTLCache(maxsize=100, ttl=10)
+
+# Cache for get_transaction_details
+# Cache up to 1000 transaction details, each for 1 hour (transaction details are immutable)
+tx_details_cache = TTLCache(maxsize=1000, ttl=3600)
+
+# Cache for get_token_balances_for_wallet
+# Cache up to 500 wallet balances, each for 30 seconds (balances can change, but not extremely rapidly for most users)
+token_balances_cache = TTLCache(maxsize=500, ttl=30)
+
+
+@cached(cache=tx_history_cache)
 def get_transaction_history(wallet_address: str, limit: int = 10) -> list:
     """
     Fetches the recent transaction signatures for a given Solana wallet address.
+    This function's results are cached.
     """
-    print(f"Fetching transaction history for {wallet_address} (limit: {limit})...")
+    logger.info(f"CACHE MISS: Fetching transaction history for {wallet_address} (limit: {limit}) from RPC.")
     try:
         public_key = PublicKey(wallet_address)
         response = solana_client.get_signatures_for_address(public_key, limit=limit)
@@ -41,8 +61,9 @@ def get_transaction_history(wallet_address: str, limit: int = 10) -> list:
 def get_transaction_details(signature: str) -> dict | None:
     """
     Fetches detailed information for a given transaction signature.
+    This function's results are cached.
     """
-    print(f"Fetching details for transaction {signature}...")
+    logger.info(f"CACHE MISS: Fetching details for transaction {signature} from RPC.")
     try:
         transaction = solana_client.get_transaction(signature, max_supported_transaction_version=0) # Specify version to avoid potential issues
         if transaction and transaction.get('result'):
@@ -321,14 +342,18 @@ def prepare_buy_transaction(new_token_mint_address: str, buyer_wallet_address: s
         f"Ensure you verify the token address and contract details before swapping."
     )
 # Token Program ID for SPL tokens
-TOKEN_PROGRAM_ID = Pubkey.from_string('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA')
+# Ensure Pubkey is aliased correctly if used here, or use SoldersPubkey directly
+TOKEN_PROGRAM_ID = SoldersPubkey.from_string('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA')
 
+
+@cached(cache=token_balances_cache)
 def get_token_balances_for_wallet(wallet_address: str) -> dict[str, float] | None:
     """
     Fetches all SPL token balances for a given Solana wallet address.
     Returns a dictionary {token_mint_address: balance}.
+    This function's results are cached.
     """
-    print(f"Fetching token balances for wallet: {wallet_address}")
+    logger.info(f"CACHE MISS: Fetching token balances for wallet {wallet_address} from RPC.")
     try:
         public_key = PublicKey(wallet_address)
         opts = TokenAccountOpts(program_id=TOKEN_PROGRAM_ID)

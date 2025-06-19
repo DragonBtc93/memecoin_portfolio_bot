@@ -9,7 +9,8 @@ from solana_trade_bot.core.config import (
     DEV_WALLETS_TO_TRACK,
     SOLANA_RPC_URL,
     MONITOR_POLLING_INTERVAL_SECONDS,
-    SOL_MINT_ADDRESS # Added import
+    SOL_MINT_ADDRESS,
+    NUM_NOTIFICATION_WORKERS # Added import
 )
 from solana_trade_bot.core import db as core_db
 from solana_trade_bot.solana_actions.tracker import (
@@ -17,26 +18,62 @@ from solana_trade_bot.solana_actions.tracker import (
     get_transaction_details,
     is_new_token_mint
 )
-from solana_trade_bot.solana_actions import trading as solana_trading # Added import
-# Import the specific notification function
-from solana_trade_bot.bot.main import notify_user_of_new_mint
+from solana_trade_bot.solana_actions import trading as solana_trading
+# Import the specific notification function from its new location
+from solana_trade_bot.bot.notifications import notify_user_of_new_mint
 
 # Setup logger for this module
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
-)
+# logging.basicConfig already called in bot/main.py, which is the entry point.
+# If this module is run standalone for testing, then basicConfig would be needed here.
 logger = logging.getLogger(__name__)
 
 processed_signatures_this_session = set() # In-memory set for current session
 
+
+async def notification_worker(name: str, queue: asyncio.Queue, bot: telegram.Bot, solana_client_instance: Client):
+    """Worker that processes notification tasks from the queue."""
+    logger.info(f"Notification worker {name} started.")
+    while True:
+        try:
+            # Item from queue: (user_chat_id, new_mint_address, dev_wallet_address)
+            # solana_client_instance is passed to worker at init and reused
+            user_chat_id, new_mint_address, dev_wallet_address = await queue.get()
+            logger.info(f"Worker {name}: Processing notification for user {user_chat_id}, mint {new_mint_address}")
+
+            await notify_user_of_new_mint(
+                bot=bot,
+                chat_id=user_chat_id,
+                new_token_mint_address=new_mint_address,
+                dev_wallet_address=dev_wallet_address,
+                solana_client=solana_client_instance # Pass the shared client instance
+            )
+            # logger.info(f"Worker {name}: Successfully sent notification to {user_chat_id} for {new_mint_address}") # Log is in notify_user_of_new_mint
+            queue.task_done()
+        except asyncio.CancelledError:
+            logger.info(f"Notification worker {name} cancelled. Exiting.")
+            break
+        except Exception as e:
+            # Log error but continue worker, and ensure task_done is called
+            logger.error(f"Notification worker {name}: Error processing item for user {user_chat_id}, mint {new_mint_address} - {e}", exc_info=True)
+            queue.task_done()
+
+
 async def monitor_wallets(bot: telegram.Bot):
     """
     Continuously monitors specified Solana developer wallets for new token mints
-    and notifies users via the Telegram bot.
+    and queues notifications for users via the Telegram bot.
     """
     logger.info("Wallet monitor started.")
-    solana_client = Client(SOLANA_RPC_URL) # Initialize client once
+    solana_client = Client(SOLANA_RPC_URL) # Initialize client once for this monitor instance
+
+    notification_q = asyncio.Queue()
+    worker_tasks = []
+    logger.info(f"Creating {NUM_NOTIFICATION_WORKERS} notification worker tasks...")
+    for i in range(NUM_NOTIFICATION_WORKERS):
+        # Pass the solana_client instance to each worker
+        task = asyncio.create_task(notification_worker(f"Worker-{i+1}", notification_q, bot, solana_client))
+        worker_tasks.append(task)
+    logger.info(f"{len(worker_tasks)} notification workers started.")
 
     while True:
         logger.info(f"Starting new monitoring cycle for {len(DEV_WALLETS_TO_TRACK)} dev wallets.")
@@ -48,9 +85,8 @@ async def monitor_wallets(bot: telegram.Bot):
 
             logger.info(f"Fetching transactions for dev wallet: {dev_wallet_address}")
             try:
-                # Use asyncio.to_thread for synchronous blocking calls
                 signatures_info = await asyncio.to_thread(
-                    get_transaction_history, dev_wallet_address, limit=20 # Increased limit
+                    get_transaction_history, dev_wallet_address, limit=20
                 )
 
                 if not signatures_info:
@@ -59,76 +95,61 @@ async def monitor_wallets(bot: telegram.Bot):
 
                 logger.info(f"Found {len(signatures_info)} signatures for {dev_wallet_address}. Processing...")
 
-                for tx_sig in signatures_info: # get_transaction_history now returns list of sig strings
+                for tx_sig in signatures_info:
                     if tx_sig in processed_signatures_this_session:
                         logger.debug(f"Transaction {tx_sig} already processed in this session. Skipping.")
                         continue
 
                     logger.info(f"Processing transaction {tx_sig} for dev wallet {dev_wallet_address}.")
-
                     transaction_details = await asyncio.to_thread(get_transaction_details, tx_sig)
 
                     if not transaction_details:
                         logger.warning(f"Could not retrieve details for transaction {tx_sig}.")
-                        processed_signatures_this_session.add(tx_sig) # Add here to avoid re-fetching erroring tx
+                        processed_signatures_this_session.add(tx_sig)
                         continue
 
                     new_mint_address = await asyncio.to_thread(is_new_token_mint, transaction_details)
 
                     if new_mint_address:
                         logger.info(f"SUCCESS! New mint detected: {new_mint_address} from tx {tx_sig} by dev {dev_wallet_address}.")
-
-                        # Check if this mint is already in our monitored_mints DB
                         db_mint_entry = await asyncio.to_thread(core_db.get_monitored_mint, new_mint_address)
 
                         if db_mint_entry is None:
-                            logger.info(f"Mint {new_mint_address} is new to the database. Adding and preparing to notify.")
-
-                            # Add to monitored_mints DB
-                            # Assuming initial_liquidity_info might be extracted or is None for now
+                            logger.info(f"Mint {new_mint_address} is new to the database. Adding and queuing notifications.")
                             await asyncio.to_thread(
                                 core_db.add_monitored_mint,
                                 new_mint_address,
                                 dev_wallet_address,
                                 tx_sig,
-                                None # Placeholder for initial_liquidity_info
+                                None
                             )
 
-                            # Get all users to notify
-                            user_chat_ids = await asyncio.to_thread(core_db.get_all_user_chat_ids)
-                            logger.info(f"Notifying {len(user_chat_ids)} users about new mint {new_mint_address}.")
+                            all_user_chat_ids = await asyncio.to_thread(core_db.get_all_user_chat_ids)
+                            users_to_notify_count = 0
+                            for user_chat_id in all_user_chat_ids:
+                                trading_enabled = await asyncio.to_thread(core_db.get_user_trading_status, user_chat_id)
+                                if trading_enabled:
+                                    # Queue item: (user_chat_id, new_mint_address, dev_wallet_address)
+                                    # The solana_client is passed to the worker during its initialization.
+                                    await notification_q.put((user_chat_id, new_mint_address, dev_wallet_address))
+                                    users_to_notify_count += 1
 
-                            for user_chat_id in user_chat_ids:
-                                try:
-                                    trading_enabled = await asyncio.to_thread(core_db.get_user_trading_status, user_chat_id)
-                                    if trading_enabled:
-                                        logger.info(f"User {user_chat_id} has trading ON. Notifying for new mint {new_mint_address}.")
-                                        await notify_user_of_new_mint(
-                                            bot=bot,
-                                            solana_client=solana_client,
-                                            chat_id=user_chat_id,
-                                            new_token_mint_address=new_mint_address,
-                                            dev_wallet_address=dev_wallet_address
-                                        )
-                                    else:
-                                        logger.info(f"User {user_chat_id} has trading OFF. Skipping new mint buy notification for {new_mint_address}.")
-                                except Exception as e_notify:
-                                    logger.error(f"Error during notification process for user {user_chat_id}, mint {new_mint_address}: {e_notify}")
+                            if users_to_notify_count > 0:
+                                logger.info(f"Queued {users_to_notify_count} notifications for mint {new_mint_address}.")
+                            else:
+                                logger.info(f"No users to notify or trading is off for all for mint {new_mint_address}.")
 
-                            # Mark mint as processed (notifications sent/attempted or skipped based on user pref)
                             await asyncio.to_thread(core_db.update_mint_processed_time, new_mint_address)
-                            logger.info(f"Finished processing and notifying for mint {new_mint_address}.")
+                            logger.info(f"Mint {new_mint_address} marked as processed for notification queuing.")
                         else:
-                            logger.info(f"Mint {new_mint_address} (from tx {tx_sig}) already in DB (processed at {db_mint_entry['processed_by_bot_at']}). Skipping notification.")
-                    # else:
-                        # logger.debug(f"Transaction {tx_sig} is not a new token mint.")
+                            logger.info(f"Mint {new_mint_address} (from tx {tx_sig}) already in DB (processed at {db_mint_entry['processed_by_bot_at']}). Skipping.")
 
-                    processed_signatures_this_session.add(tx_sig) # Add to session cache after processing
+                    processed_signatures_this_session.add(tx_sig)
 
             except Exception as e:
                 logger.error(f"Error processing wallet {dev_wallet_address}: {e}", exc_info=True)
 
-        # Clean up older signatures from the session cache to prevent unbounded growth if bot runs for very long
+        # Clean up older signatures
         if len(processed_signatures_this_session) > 10000: # Example threshold
             logger.info(f"Clearing {len(processed_signatures_this_session) - 5000} oldest signatures from session cache.")
             # Convert to list, sort (if order matters, though not strictly necessary for a set), trim, convert back
@@ -143,38 +164,56 @@ async def monitor_wallets(bot: telegram.Bot):
         all_user_chat_ids = await asyncio.to_thread(core_db.get_all_user_chat_ids)
 
         # Fetch current SOL price once for the cycle if needed for USD conversion
-        sol_price_usdc_for_tp = await asyncio.to_thread(
-            solana_trading.get_current_token_price,
-            SOL_MINT_ADDRESS, # Use imported SOL_MINT_ADDRESS directly
-            vs_token="USDC"
-        )
-        if sol_price_usdc_for_tp is None:
-            logger.warning("Could not fetch SOL/USDC price for TP calculations. Skipping TP checks for this cycle.")
-        else:
-            logger.info(f"Current SOL/USDC price for TP calcs: ${sol_price_usdc_for_tp:.2f}")
-            for chat_id in all_user_chat_ids:
-                logger.debug(f"Checking take-profits for user {chat_id}")
-                confirmed_trades = await asyncio.to_thread(core_db.get_user_trades, chat_id, only_open=True)
+        prices_to_fetch_in_tp_cycle = {SOL_MINT_ADDRESS} # Use a set to collect unique mints
+        unique_trade_mints_for_tp = set()
 
-                if not confirmed_trades:
-                    logger.debug(f"No confirmed_buy trades found for user {chat_id}.")
-                    continue
+        # First pass to gather all unique mint addresses from trades across all users
+        # This avoids fetching SOL price if no users have trades to check.
+        all_user_trades_for_tp_check: dict[int, list] = {}
+        if all_user_chat_ids: # Only proceed if there are users
+            for chat_id in all_user_chat_ids:
+                confirmed_trades = await asyncio.to_thread(core_db.get_user_trades, chat_id, only_open=True)
+                if confirmed_trades:
+                    all_user_trades_for_tp_check[chat_id] = confirmed_trades
+                    for trade in confirmed_trades:
+                        unique_trade_mints_for_tp.add(trade['token_mint_address'])
+
+            if unique_trade_mints_for_tp: # Only add SOL if there are trades to process
+                 prices_to_fetch_in_tp_cycle.update(unique_trade_mints_for_tp)
+
+        fetched_prices_for_tp = {}
+        if prices_to_fetch_in_tp_cycle: # Only fetch if there's something to fetch
+            list_of_mints_for_api = list(prices_to_fetch_in_tp_cycle)
+            logger.info(f"TP Cycle: Batch fetching prices for {len(list_of_mints_for_api)} unique mints (incl. SOL).")
+            fetched_prices_for_tp = await asyncio.to_thread(
+                solana_trading.get_current_token_prices_batch,
+                list_of_mints_for_api,
+                vs_token="USDC"
+            )
+
+        sol_price_usdc_for_tp = fetched_prices_for_tp.get(SOL_MINT_ADDRESS)
+
+        if sol_price_usdc_for_tp is None and unique_trade_mints_for_tp: # SOL price needed only if there are trades
+            logger.warning("Could not fetch SOL/USDC price for TP calculations. Skipping TP checks for this cycle.")
+        elif all_user_trades_for_tp_check: # Only proceed if there are trades to check
+            logger.info(f"Current SOL/USDC price for TP calcs: ${sol_price_usdc_for_tp:.2f}" if sol_price_usdc_for_tp else "SOL Price N/A")
+            for chat_id, confirmed_trades in all_user_trades_for_tp_check.items():
+                logger.debug(f"Checking take-profits for user {chat_id}")
+                # confirmed_trades = await asyncio.to_thread(core_db.get_user_trades, chat_id, only_open=True) # Already fetched
 
                 for trade in confirmed_trades:
                     token_mint = trade['token_mint_address']
                     bought_price_sol_per_token = trade['sol_price_at_buy']
-                    last_tp_notified_level_db = trade['last_tp_notified_level'] # This is an INT or None
+                    last_tp_notified_level_db = trade['last_tp_notified_level']
 
-                    if bought_price_sol_per_token is None: # Should not happen for 'confirmed_buy'
+                    if bought_price_sol_per_token is None:
                         logger.warning(f"Skipping TP check for trade_id {trade['trade_id']} (user {chat_id}): missing bought_price_sol_per_token.")
                         continue
 
-                    current_token_price_usdc = await asyncio.to_thread(
-                        solana_trading.get_current_token_price, token_mint, vs_token="USDC"
-                    )
+                    current_token_price_usdc = fetched_prices_for_tp.get(token_mint)
 
-                    if current_token_price_usdc is None:
-                        logger.warning(f"Could not fetch current price for {token_mint} (user {chat_id}, trade {trade['trade_id']}). Skipping TP check.")
+                    if current_token_price_usdc is None: # Already logged by batch function if API failed for this mint
+                        logger.warning(f"TP Check: Current price for {token_mint} (user {chat_id}, trade {trade['trade_id']}) not available from batch. Skipping.")
                         continue
 
                     # Convert SOL-based buy price to USD for comparison
