@@ -2,7 +2,7 @@ import urllib.parse
 import requests # For Jupiter API
 import logging
 import base58
-from cachetools import TTLCache, cached
+from cachetools import TTLCache, cached, keys # Added keys
 
 from solana_trade_bot.core.config import TAKE_PROFIT_LEVELS_PERCENTAGES, SOL_MINT_ADDRESS, TAKE_PROFIT_SELL_SCHEDULE
 
@@ -210,10 +210,14 @@ def calculate_profit(bought_price: float, current_price: float, amount: float) -
     return (current_price - bought_price) * amount
 
 # Cache for Jupiter API price calls
-# Cache up to 1000 different mint prices, each for 10 seconds
+# Cache up to 1000 different mint/vs_token pairs, each for 10 seconds
 price_cache = TTLCache(maxsize=1000, ttl=10)
 
-@cached(cache=price_cache)
+# Custom key that includes vs_token for the cache
+def price_cache_key(token_mint_address: str, vs_token: str = "USDC"):
+    return keys.hashkey(token_mint_address, vs_token)
+
+@cached(cache=price_cache, key=price_cache_key)
 def get_current_token_price(token_mint_address: str, vs_token: str = "USDC") -> float | None:
     """
     Fetches the current market price of a single token using Jupiter Price API.
@@ -238,15 +242,17 @@ def get_current_token_prices_batch(token_mint_addresses: list[str], vs_token: st
     mints_to_fetch_from_api: list[str] = []
 
     # Phase 1: Check cache for each token
-    for mint_address in token_mint_addresses:
-        cache_key = (mint_address, vs_token) # Match how @cached would form its key for get_current_token_price
+    # Deduplicate input mints first to avoid redundant cache checks if batch is called with duplicates
+    unique_mints_in_request = sorted(list(set(token_mint_addresses)))
+
+    for mint_address in unique_mints_in_request:
+        cache_key = price_cache_key(mint_address, vs_token) # Use the same custom key
         cached_price = price_cache.get(cache_key)
         if cached_price is not None:
             results[mint_address] = cached_price
             logger.debug(f"BATCH CACHE HIT: Price for {mint_address} vs {vs_token} found in cache: {cached_price}")
         else:
-            if mint_address not in mints_to_fetch_from_api: # Avoid duplicates if input list had them
-                 mints_to_fetch_from_api.append(mint_address)
+            mints_to_fetch_from_api.append(mint_address) # Already unique
 
     # Phase 2: Fetch remaining tokens from API
     if mints_to_fetch_from_api:
@@ -266,34 +272,37 @@ def get_current_token_prices_batch(token_mint_addresses: list[str], vs_token: st
                     if mint_address in api_price_data and api_price_data[mint_address].get('price') is not None:
                         price = float(api_price_data[mint_address]['price'])
                         results[mint_address] = price
-                        price_cache[(mint_address, vs_token)] = price # Manually update cache
-                        logger.info(f"API FETCH SUCCESS: Price for {mint_address} ({api_price_data[mint_address].get('mintSymbol','N/A')}) vs {vs_token}: {price}. Stored in cache.")
+                        # Update cache using the same custom key
+                        price_cache[price_cache_key(mint_address, vs_token)] = price
+                        logger.debug(f"API FETCH SUCCESS: Price for {mint_address} vs {vs_token}: {price}. Stored in cache.")
                     else:
                         results[mint_address] = None
-                        # Optionally, cache None with a shorter TTL if desired, e.g.:
-                        # price_cache[(mint_address, vs_token)] = None # Or a specific marker with short TTL
+                        # Cache None to prevent re-fetching for a short period if token has no price
+                        price_cache[price_cache_key(mint_address, vs_token)] = None
                         logger.warning(f"API FETCH: Price data not found for {mint_address} in Jupiter batch response.")
             else:
                 logger.warning(f"API FETCH: 'data' field missing in Jupiter batch response for mints: {ids_string}")
-                for mint_address in mints_to_fetch_from_api: # Ensure all requested mints get a None result
+                for mint_address in mints_to_fetch_from_api:
                     results[mint_address] = None
 
         except requests.exceptions.HTTPError as http_err:
-            logger.error(f"HTTP error occurred during batch price fetch: {http_err} - Response: {response.text if 'response' in locals() else 'No response object'}")
+            logger.error(f"HTTP error during batch price fetch for {ids_string}: {http_err} - Response: {response.text if 'response' in locals() else 'No response object'}")
             for mint_address in mints_to_fetch_from_api: results[mint_address] = None
         except requests.exceptions.RequestException as req_err:
-            logger.error(f"Request error occurred during batch price fetch: {req_err}")
+            logger.error(f"Request error occurred during batch price fetch for {ids_string}: {req_err}")
             for mint_address in mints_to_fetch_from_api: results[mint_address] = None
         except ValueError as json_err:
-            logger.error(f"JSON decoding error during batch price fetch: {json_err} - Response: {response.text if 'response' in locals() else 'No response object'}")
+            logger.error(f"JSON decoding error during batch price fetch for {ids_string}: {json_err} - Response: {response.text if 'response' in locals() else 'No response object'}")
             for mint_address in mints_to_fetch_from_api: results[mint_address] = None
         except Exception as e:
-            logger.error(f"An unexpected error occurred during batch price fetch: {e}", exc_info=True)
+            logger.error(f"An unexpected error occurred during batch price fetch for {ids_string}: {e}", exc_info=True)
             for mint_address in mints_to_fetch_from_api: results[mint_address] = None
-    else:
+    elif unique_mints_in_request: # If list was not empty, but all were found in cache
         logger.info("BATCH CACHE HIT: All requested token prices were found in cache.")
 
-    return results
+    # Ensure all originally requested tokens have an entry in results, even if some were duplicates
+    final_results = {mint: results.get(mint) for mint in token_mint_addresses}
+    return final_results
 
 
 # Original get_current_token_price - keep for reference or remove after refactor below

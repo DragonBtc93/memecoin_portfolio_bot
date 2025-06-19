@@ -9,8 +9,8 @@ from cachetools import TTLCache, cached
 # import threading # RLock not needed for basic @cached usage
 from solana_trade_bot.core.config import (
     DEV_WALLETS_TO_TRACK,
-    SOLANA_RPC_URL,
-    TAKE_PROFIT_LEVELS_PERCENTAGES
+    SOLANA_RPC_URL
+    # TAKE_PROFIT_LEVELS_PERCENTAGES # Removed as unused in this file
 )
 
 # Initialize Solana client
